@@ -16,13 +16,15 @@ import UniformTypeIdentifiers
 
 final class NativeTextView: NSTextView {
     private var baseContentHeight: CGFloat = 0
-    /// Real content height including overscroll, but excluding the
-    /// `max(..., scrollViewHeight)` inflation used for click-below-text.
+    /// Real content height including overscroll, excluding the click-below-text inflation.
     var scrollableContentHeight: CGFloat {
         max(ceil(baseContentHeight + activeBottomOverscroll), 0)
     }
     private var activeBottomOverscroll: CGFloat = 0
     private var isApplyingManagedFrameSize = false
+    /// Last scrollY captured before a transient frame shrink, restored once a later recalc grows the frame back.
+    private var pendingDesiredScrollY: CGFloat?
+    private var isRestoringScroll: Bool = false
     var configuration: MarkdownEditorConfiguration = .default {
         didSet {
             overscrollPercent = configuration.overscroll.percent
@@ -269,6 +271,7 @@ final class NativeTextView: NSTextView {
         debugTag: String = "?"
     ) {
         _ = debugTag
+        let preScrollY = scrollView.contentView.bounds.origin.y
         scrollView.contentInsets.bottom = 0
 
         let lineHeight = layoutBridgeDefaultLineHeight(for: self.baseFont, using: layoutBridge)
@@ -289,10 +292,36 @@ final class NativeTextView: NSTextView {
 
         let baseHeightChanged = abs(measured - baseContentHeight) > 0.5
         let overscrollChanged = abs(resolvedOverscroll - activeBottomOverscroll) > 0.5
-        guard baseHeightChanged || overscrollChanged else { return }
+        guard baseHeightChanged || overscrollChanged else {
+            tryRestorePendingScrollY(scrollView: scrollView)
+            return
+        }
         baseContentHeight = measured
         activeBottomOverscroll = resolvedOverscroll
         applyManagedFrameSize(width: targetWidth ?? frame.size.width)
+        let postScrollY = scrollView.contentView.bounds.origin.y
+        if postScrollY < preScrollY - 0.5 {
+            pendingDesiredScrollY = max(pendingDesiredScrollY ?? preScrollY, preScrollY)
+        }
+        tryRestorePendingScrollY(scrollView: scrollView)
+    }
+
+    /// Restore the user's intended scroll position (cmd f)
+    private func tryRestorePendingScrollY(scrollView: NSScrollView) {
+        guard let desired = pendingDesiredScrollY else { return }
+        let visible = scrollView.contentView.bounds.height
+        let maxValid = max(0, frame.size.height - visible)
+        let target = min(desired, maxValid)
+        let current = scrollView.contentView.bounds.origin.y
+        if target > current + 0.5 {
+            isRestoringScroll = true
+            scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: target))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            isRestoringScroll = false
+        }
+        if abs(target - desired) < 0.5 {
+            pendingDesiredScrollY = nil
+        }
     }
 
 
@@ -372,11 +401,7 @@ final class NativeTextView: NSTextView {
                                  width: indicator.frame.width, height: r.height)
         isApplyingCaretShift = false
     }
-    /// At the very end of a doc that ends with `\n`, AppKit places the caret
-    /// indicator on the previous line's TOP instead of below it (FB22524198 —
-    /// transient phantom-EOD layout). KVO-observe the indicator and snap its
-    /// origin.y to `lastLineMaxY + paragraphSpacing`, the position TextKit
-    /// would settle on once layout completes.
+    /// Workaround for FB22524198: snap the caret indicator to `lastLineMaxY + paragraphSpacing` when AppKit transiently places it on the previous line's top at trailing-`\n` end-of-doc.
     private func fixPhantomTrailingCaret() {
         if let indicator = subviews.first(where: { type(of: $0) == NSTextInsertionIndicator.self }),
            observedCaretIndicator !== indicator {
