@@ -95,7 +95,8 @@ extension NativeTextView {
             guard let line = lastTextLine else { return false }
             let lineMaxY = fragment.layoutFragmentFrame.origin.y + line.typographicBounds.maxY
             let style = ts.attribute(.paragraphStyle, at: ns.length - 1, effectiveRange: nil) as? NSParagraphStyle
-            desiredY = lineMaxY + (style?.paragraphSpacing ?? 0)
+            // Layout-fragment Y is textContainer-relative; the indicator frame is textView-relative — add the textContainerInset offset so the snap stays correct when an embedder configures non-zero text insets.
+            desiredY = lineMaxY + (style?.paragraphSpacing ?? 0) + self.textContainerInset.height
             return false
         }
         guard let desiredY, abs(indicator.frame.origin.y - desiredY) >= 0.5 else { return }

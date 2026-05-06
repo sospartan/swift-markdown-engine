@@ -124,7 +124,7 @@ public struct TextInsets: Sendable {
     public var horizontal: CGFloat
     public var vertical: CGFloat
 
-    public init(horizontal: CGFloat = 0, vertical: CGFloat = 5) {
+    public init(horizontal: CGFloat = 0, vertical: CGFloat = 0) {
         self.horizontal = horizontal
         self.vertical = vertical
     }
