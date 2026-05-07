@@ -92,10 +92,11 @@ editor renders Markdown and accepts edits immediately.
 ## Demo
 
 A runnable SwiftUI demo lives in [`Demo/`](Demo/MarkdownEngineDemo.xcodeproj).
-Open the Xcode project and hit **Run** to launch a window with the editor
-seeded with sample Markdown. The demo depends on the package via a local
-path reference, so changes to the engine source rebuild into the demo
-immediately.
+Open [`swift-markdown-engine.xcworkspace`](swift-markdown-engine.xcworkspace)
+at the repo root, select the **MarkdownEngineDemo** scheme, and hit
+**Run**. The workspace bundles `Package.swift` and the demo project
+together, so the demo links directly against the package source and any
+engine edit rebuilds into the demo on the next run.
 
 ## Customizing the Theme
 
