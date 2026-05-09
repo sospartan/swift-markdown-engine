@@ -48,9 +48,38 @@ extension MarkdownStyler {
     static func styleEmphasis(_ ctx: StylingContext) -> [StyledRange] {
         var attrs: [StyledRange] = []
 
+        // We want emphasis to apply when a span CONTAINS inline code
+        // (e.g. `~~strike with `code`~~`), so the legacy "overlap with any
+        // code/inline-code token" suppression is too aggressive. Skip a
+        // span only when it's fully contained inside a code token —
+        // i.e. fenced code blocks or `…` spans whose range completely
+        // encloses the emphasis.
+        func isFullyInsideAnyCode(_ range: NSRange) -> Bool {
+            for codeToken in ctx.codeTokens {
+                if range.location >= codeToken.range.location
+                    && NSMaxRange(range) <= NSMaxRange(codeToken.range) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        // True iff `inner` is fully contained in some bold/boldItalic span.
+        // Used to compose italic-inside-bold into a bold-italic glyph
+        // rather than letting italic clobber the bold trait.
+        func isInsideBoldSpan(_ inner: NSRange) -> Bool {
+            for token in ctx.tokens where token.kind == .bold || token.kind == .boldItalic {
+                if inner.location >= token.range.location
+                    && NSMaxRange(inner) <= NSMaxRange(token.range) {
+                    return true
+                }
+            }
+            return false
+        }
+
         // Bold+Italic
         for token in ctx.tokens where token.kind == .boldItalic {
-            if MarkdownDetection.isInsideCodeBlock(range: token.range, codeTokens: ctx.codeTokens) { continue }
+            if isFullyInsideAnyCode(token.range) { continue }
             let biDescriptor = ctx.baseDescriptor.withSymbolicTraits([.bold, .italic])
             let biFont = NSFont(descriptor: biDescriptor, size: ctx.baseFont.pointSize)
                 ?? NSFontManager.shared.convert(ctx.baseFont, toHaveTrait: [.boldFontMask, .italicFontMask])
@@ -59,7 +88,7 @@ extension MarkdownStyler {
 
         // Bold
         for token in ctx.tokens where token.kind == .bold {
-            if MarkdownDetection.isInsideCodeBlock(range: token.range, codeTokens: ctx.codeTokens) { continue }
+            if isFullyInsideAnyCode(token.range) { continue }
             let boldDesc = ctx.baseDescriptor.withSymbolicTraits(.bold)
             let boldFont = NSFont(descriptor: boldDesc, size: ctx.baseFont.pointSize)
                 ?? NSFontManager.shared.convert(ctx.baseFont, toHaveTrait: .boldFontMask)
@@ -68,7 +97,7 @@ extension MarkdownStyler {
 
         // Strikethrough ~~text~~
         for token in ctx.tokens where token.kind == .strikethrough {
-            if MarkdownDetection.isInsideCodeBlock(range: token.range, codeTokens: ctx.codeTokens) { continue }
+            if isFullyInsideAnyCode(token.range) { continue }
             attrs.append((token.contentRange, [
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                 .strikethroughColor: ctx.configuration.theme.strikethroughColor
@@ -77,16 +106,23 @@ extension MarkdownStyler {
 
         // Italic
         for token in ctx.tokens where token.kind == .italic {
-            if MarkdownDetection.isInsideCodeBlock(range: token.range, codeTokens: ctx.codeTokens) { continue }
+            if isFullyInsideAnyCode(token.range) { continue }
+            let composeWithBold = isInsideBoldSpan(token.range)
             if let headingToken = ctx.tokens.first(where: { $0.kind == .heading && NSLocationInRange(token.contentRange.location, $0.contentRange) }) {
                 let level = headingToken.markerRanges.first?.length ?? 1
                 let multiplier = ctx.configuration.headings.fontMultiplier(for: level)
                 let headingBase = NSFont(name: ctx.fontName, size: ctx.baseFont.pointSize * multiplier)
                     ?? NSFont.systemFont(ofSize: ctx.baseFont.pointSize * multiplier)
-                let biDescriptor = headingBase.fontDescriptor.withSymbolicTraits([.bold, .italic])
-                let fontIt = NSFont(descriptor: biDescriptor, size: headingBase.pointSize)
+                let traits: NSFontDescriptor.SymbolicTraits = [.bold, .italic]
+                let descriptor = headingBase.fontDescriptor.withSymbolicTraits(traits)
+                let fontIt = NSFont(descriptor: descriptor, size: headingBase.pointSize)
                     ?? NSFontManager.shared.convert(headingBase, toHaveTrait: [.boldFontMask, .italicFontMask])
                 attrs.append((token.contentRange, [.font: fontIt]))
+            } else if composeWithBold {
+                let descriptor = ctx.baseDescriptor.withSymbolicTraits([.bold, .italic])
+                let font = NSFont(descriptor: descriptor, size: ctx.baseFont.pointSize)
+                    ?? NSFontManager.shared.convert(ctx.baseFont, toHaveTrait: [.boldFontMask, .italicFontMask])
+                attrs.append((token.contentRange, [.font: font]))
             } else {
                 let italicDesc = ctx.baseDescriptor.withSymbolicTraits(.italic)
                 let italicFont = NSFont(descriptor: italicDesc, size: ctx.baseFont.pointSize)
