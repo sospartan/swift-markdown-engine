@@ -94,12 +94,12 @@ highlighting, themes, wiki-link state, and more.
 The engine talks to your app through four service protocols, each with
 a no-op default so you only implement what you actually need:
 
-| Protocol | What you supply | Default | Ready-made bridge / suggested library |
-|---|---|---|---|
-| `WikiLinkResolver` | Resolve a `[[Name]]` to a stable opaque id | `NoOpWikiLinkResolver` | (your data model) |
-| `EmbeddedImageProvider` | Look up an `NSImage` for `![[Name]]` | `NoOpEmbeddedImageProvider` | (your asset store) |
-| `SyntaxHighlighter` | Highlight code blocks for a given language | `PlainTextSyntaxHighlighter` | **`HighlighterSwiftBridge`** ([recommended](#syntax-highlighting)), wrapping [HighlighterSwift](https://github.com/smittytone/HighlighterSwift) |
-| `LatexRenderer` | Render a LaTeX string to an `NSImage` | `NoOpLatexRenderer` | [SwiftMath](https://github.com/mgriebling/SwiftMath) (roll your own bridge) |
+| Protocol | What you supply | Ready-made bridge / suggested library |
+|---|---|---|
+| `WikiLinkResolver` | Resolve a `[[Name]]` to a stable opaque id | (your data model) |
+| `EmbeddedImageProvider` | Look up an `NSImage` for `![[Name]]` | (your asset store) |
+| `SyntaxHighlighter` | Highlight code blocks for a given language | **`HighlighterSwiftBridge`** ([recommended](#syntax-highlighting)) — built on [HighlighterSwift](https://github.com/smittytone/HighlighterSwift) |
+| `LatexRenderer` | Render a LaTeX string to an `NSImage` | [SwiftMath](https://github.com/mgriebling/SwiftMath) — build your own adapter |
 
 Implement what you need and pass it through `MarkdownEditorServices`:
 
