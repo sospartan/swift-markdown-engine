@@ -27,6 +27,8 @@ extension NSAttributedString.Key {
     static let scrollableBlockSourceID = NSAttributedString.Key("ScrollableBlockSourceID")
     /// CGFloat — total reserved height (image + scroller strip) for overlay sizing.
     static let scrollableBlockTotalHeight = NSAttributedString.Key("ScrollableBlockTotalHeight")
+    /// NSValue(range:) — full multi-line range of the wide-table source, used to scope width-change restyles.
+    static let scrollableBlockFullRange = NSAttributedString.Key("ScrollableBlockFullRange")
 }
 
 final class MarkdownTextLayoutFragment: NSTextLayoutFragment {

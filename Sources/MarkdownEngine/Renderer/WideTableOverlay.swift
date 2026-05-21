@@ -148,11 +148,22 @@ extension NativeTextView {
         let containerWidth = container.size.width
         guard containerWidth.isFinite, containerWidth > 0 else { return }
 
-        // Settle layout before measuring — stale fragments would yield wrong anchor Ys.
-        tlm.ensureLayout(for: tlm.documentRange)
-
         var seenSourceIDs: Set<Int> = []
         let fullRange = NSRange(location: 0, length: storage.length)
+
+        // Cheap presence-check first: skip the full-document layout pass when
+        // the doc has no wide tables. enumerateAttribute stops on first hit.
+        var hasAnyWideTable = false
+        storage.enumerateAttribute(.scrollableBlockSourceID, in: fullRange, options: []) { value, _, stop in
+            if value is Int { hasAnyWideTable = true; stop.pointee = true }
+        }
+        guard hasAnyWideTable else {
+            removeAllWideTableOverlays()
+            return
+        }
+
+        // Settle layout before measuring — stale fragments would yield wrong anchor Ys.
+        tlm.ensureLayout(for: tlm.documentRange)
 
         storage.enumerateAttribute(.scrollableBlockSourceID, in: fullRange, options: []) { value, attrRange, _ in
             guard let sourceID = value as? Int,

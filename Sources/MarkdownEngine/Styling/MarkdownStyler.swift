@@ -256,7 +256,8 @@ extension MarkdownStyler {
                 extraAnchorAttrs: [
                     .scrollableBlockNaturalWidth: imageBounds.width,
                     .scrollableBlockSourceID: sourceID,
-                    .scrollableBlockTotalHeight: totalHeight
+                    .scrollableBlockTotalHeight: totalHeight,
+                    .scrollableBlockFullRange: NSValue(range: paraRange)
                 ],
                 markerTexts: markerTexts,
                 ctx: ctx,
