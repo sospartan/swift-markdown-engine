@@ -38,6 +38,15 @@ indirect enum BlockNode: Equatable {
     case table(range: NSRange)
     case thematicBreak(range: NSRange)
     case blank(range: NSRange)
+
+    var range: NSRange {
+        switch self {
+        case .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
+             .list(let r, _), .codeBlock(let r), .blockLatex(let r), .table(let r),
+             .thematicBreak(let r), .blank(let r):
+            return r
+        }
+    }
 }
 
 enum DocumentAST {
@@ -47,21 +56,34 @@ enum DocumentAST {
     private static let tab: unichar = 0x09
 
     /// Build the document AST: block structure with inline children parsed.
-    static func parse(_ text: String) -> [BlockNode] {
+    /// When `scopedRanges` is given, inline content is parsed only for blocks
+    /// intersecting it (per-keystroke restyling) — others get empty inlines, so
+    /// a restyle touches one block instead of the whole document.
+    static func parse(_ text: String, scopedRanges: [NSRange]? = nil) -> [BlockNode] {
         let ns = text as NSString
-        return BlockParser.parse(text).map { node(for: $0, ns: ns) }
+        let blocks = BlockParser.parse(text)
+        // In scoped mode the styler only touches blocks intersecting the edit,
+        // so don't even build BlockNodes for the rest (no per-block work × 1000s).
+        let relevant = scopedRanges == nil ? blocks : blocks.filter { inScope($0.range, scopedRanges) }
+        return relevant.map { node(for: $0, ns: ns, scopedRanges: scopedRanges) }
     }
 
-    private static func node(for block: Block, ns: NSString) -> BlockNode {
+    private static func inScope(_ range: NSRange, _ scopedRanges: [NSRange]?) -> Bool {
+        guard let scopedRanges else { return true }
+        return scopedRanges.contains { NSIntersectionRange($0, range).length > 0 }
+    }
+
+    private static func node(for block: Block, ns: NSString, scopedRanges: [NSRange]?) -> BlockNode {
+        let scoped = inScope(block.range, scopedRanges)
         switch block.kind {
         case .paragraph:
-            return .paragraph(range: block.range, inlines: InlineParser.parse(ns, range: block.range))
+            return .paragraph(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range) : [])
         case .heading:
-            return heading(block.range, ns)
+            return heading(block.range, ns, scoped: scoped)
         case .blockquote:
-            return .blockquote(range: block.range, inlines: InlineParser.parse(ns, range: block.range))
+            return .blockquote(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range) : [])
         case .list:
-            return list(block.range, ns)
+            return list(block.range, ns, scoped: scoped)
         case .fencedCode:
             return .codeBlock(range: block.range)
         case .blockLatex:
@@ -76,7 +98,7 @@ enum DocumentAST {
     }
 
     /// ATX heading: optional indent, `#`×level, space(s), then inline content.
-    private static func heading(_ range: NSRange, _ ns: NSString) -> BlockNode {
+    private static func heading(_ range: NSRange, _ ns: NSString, scoped: Bool = true) -> BlockNode {
         let end = NSMaxRange(range)
         var i = range.location
         while i < end, ns.character(at: i) == space || ns.character(at: i) == tab { i += 1 }
@@ -92,18 +114,18 @@ enum DocumentAST {
         let contentRange = NSRange(location: contentStart, length: contentEnd - contentStart)
 
         return .heading(level: level, range: range, markers: markers,
-                        inlines: InlineParser.parse(ns, range: contentRange))
+                        inlines: scoped ? InlineParser.parse(ns, range: contentRange) : [])
     }
 
     /// Split a list block into one `ListItem` per physical line (Phase A is
     /// line-based; Phase B groups continuation lines + nested blocks per item).
-    private static func list(_ range: NSRange, _ ns: NSString) -> BlockNode {
+    private static func list(_ range: NSRange, _ ns: NSString, scoped: Bool = true) -> BlockNode {
         var items: [ListItem] = []
         var cursor = range.location
         let end = NSMaxRange(range)
         while cursor < end {
             let line = ns.lineRange(for: NSRange(location: cursor, length: 0))
-            items.append(listItem(line, ns))
+            items.append(listItem(line, ns, scoped: scoped))
             cursor = NSMaxRange(line)
         }
         return .list(range: range, items: items)
@@ -111,7 +133,7 @@ enum DocumentAST {
 
     /// Parse one list-item line: indent, marker (`-`/`*`/`+` or `N.`/`N)`),
     /// optional `[ ]`/`[x]` task checkbox, then the inline content.
-    private static func listItem(_ lineRange: NSRange, _ ns: NSString) -> ListItem {
+    private static func listItem(_ lineRange: NSRange, _ ns: NSString, scoped: Bool = true) -> ListItem {
         let end = NSMaxRange(lineRange)
         var i = lineRange.location
         var indent = 0
@@ -150,7 +172,7 @@ enum DocumentAST {
         let content = NSRange(location: i, length: max(0, contentEnd - i))
         return ListItem(range: lineRange, marker: marker, ordered: ordered, number: number,
                         checkbox: checkbox, checked: checked, indent: indent,
-                        contentRange: content, inlines: InlineParser.parse(ns, range: content))
+                        contentRange: content, inlines: scoped ? InlineParser.parse(ns, range: content) : [])
     }
 
     private static func isLineBreak(_ c: unichar) -> Bool { c == 0x0A || c == 0x0D }

@@ -44,9 +44,30 @@ struct Block: Equatable {
 
 enum BlockParser {
 
+    private static let cacheLock = NSLock()
+    private static var cachedText: String?
+    private static var cachedBlocks: [Block]?
+
     /// Splits `text` into a gap-free, ordered sequence of blocks that tile the
-    /// entire string: every UTF-16 unit belongs to exactly one block.
+    /// entire string: every UTF-16 unit belongs to exactly one block. Memoizes
+    /// the last result (1 entry) so the two per-keystroke callers —
+    /// `parseTokensViaAST` and the styler's `DocumentAST.parse` — share a single
+    /// line-scan instead of running it twice.
     static func parse(_ text: String) -> [Block] {
+        cacheLock.lock()
+        if cachedText == text, let cachedBlocks {
+            cacheLock.unlock()
+            return cachedBlocks
+        }
+        cacheLock.unlock()
+        let blocks = computeBlocks(text)
+        cacheLock.lock()
+        cachedText = text; cachedBlocks = blocks
+        cacheLock.unlock()
+        return blocks
+    }
+
+    private static func computeBlocks(_ text: String) -> [Block] {
         let nsText = text as NSString
         let length = nsText.length
         guard length > 0 else { return [] }

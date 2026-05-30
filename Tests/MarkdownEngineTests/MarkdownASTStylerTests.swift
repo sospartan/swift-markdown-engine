@@ -26,6 +26,26 @@ struct MarkdownASTStylerTests {
         return result
     }
 
+    /// Per-keystroke perf: scoping a restyle to the edited paragraph must produce
+    /// the EXACT same attributes within that paragraph as a full-document style.
+    /// This is the safety net for the `scopedRanges` fast path — it can't diverge
+    /// from the full rebuild (no glitch).
+    @MainActor
+    @Test("scoped styling == full styling, clipped to the edited paragraph")
+    func scopedMatchesFullForEditedParagraph() {
+        _ = NSApplication.shared
+        let text = "plain one\n\n**bold** in two `code`\n\n- item *x*\n\nhttps://example.com"
+        let ns = text as NSString
+        let para = ns.paragraphRange(for: NSRange(location: 13, length: 0))   // the `**bold**…` line
+        func keys(_ scoped: [NSRange]?) -> String {
+            let r = MarkdownASTStyler.styleAttributes(
+                text: text, fontName: fontName, fontSize: base, scopedRanges: scoped
+            ).filter { NSIntersectionRange($0.range, para).length > 0 }
+            return styleKeySnapshot(r)
+        }
+        #expect(keys([para]) == keys(nil))
+    }
+
     @Test("bold inside a heading stays heading-size and consistent (fixes # **n*o*des**)")
     func headingBoldComposesToHeadingSize() {
         let attrs = MarkdownASTStyler.styleAttributes(text: "# **n*o*des**", fontName: fontName, fontSize: base)

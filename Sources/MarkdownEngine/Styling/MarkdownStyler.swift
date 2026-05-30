@@ -130,7 +130,7 @@ enum MarkdownStyler {
         result += MarkdownASTStyler.styleAttributes(
             text: text, fontName: fontName, fontSize: fontSize,
             caretLocation: caretLocation, wikiLinkIDProvider: wikiLinkIDProvider,
-            configuration: configuration
+            scopedRanges: scopedRanges, configuration: configuration
         )
         // NSImage rendering reuses the existing, proven machinery.
         result += styleBlockLatex(ctx)

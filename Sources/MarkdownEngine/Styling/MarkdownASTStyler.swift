@@ -28,6 +28,7 @@ enum MarkdownASTStyler {
         fontSize: CGFloat,
         caretLocation: Int = -1,
         wikiLinkIDProvider: @escaping (NSRange) -> String? = { _ in nil },
+        scopedRanges: [NSRange]? = nil,
         configuration: MarkdownEditorConfiguration = .default
     ) -> [StyledRange] {
         let baseFont = NSFont(name: fontName, size: fontSize) ?? .systemFont(ofSize: fontSize)
@@ -60,11 +61,12 @@ enum MarkdownASTStyler {
             inlineMarkerFont: NSFont(name: fontName, size: hiddenSize) ?? .systemFont(ofSize: hiddenSize),
             caret: caretLocation,
             config: configuration,
-            wikiLinkID: wikiLinkIDProvider
+            wikiLinkID: wikiLinkIDProvider,
+            scopedRanges: scopedRanges
         )
-        let blocks = DocumentAST.parse(text)
+        let blocks = DocumentAST.parse(text, scopedRanges: scopedRanges)
         var attrs: [StyledRange] = []
-        for block in blocks {
+        for block in blocks where ctx.inScope(block.range) {
             styleBlock(block, font: baseFont, ctx: ctx, into: &attrs)
         }
         shrinkInactiveMarkers(in: blocks, ctx: ctx, into: &attrs)
@@ -193,9 +195,11 @@ enum MarkdownASTStyler {
 
     private static func styleAutoLinks(ctx: Ctx, codeRanges: [NSRange], into attrs: inout [StyledRange]) {
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return }
-        detector.enumerateMatches(in: ctx.text, range: ctx.fullRange) { match, _, _ in
-            guard let match, let url = match.url, !isInCode(match.range, codeRanges) else { return }
-            attrs.append((match.range, [.link: url]))
+        for scan in ctx.scanRanges {
+            detector.enumerateMatches(in: ctx.text, range: scan) { match, _, _ in
+                guard let match, let url = match.url, !isInCode(match.range, codeRanges) else { return }
+                attrs.append((match.range, [.link: url]))
+            }
         }
     }
 
@@ -206,12 +210,14 @@ enum MarkdownASTStyler {
         let faded = ctx.theme.incompleteLink.withAlphaComponent(ctx.config.link.incompleteLinkAlpha)
         for pattern in patterns {
             guard let re = regex(pattern, false) else { continue }
-            for m in re.matches(in: ctx.text, options: [], range: ctx.fullRange) where !isInCode(m.range, codeRanges) {
+            for scan in ctx.scanRanges {
+              for m in re.matches(in: ctx.text, options: [], range: scan) where !isInCode(m.range, codeRanges) {
                 for (i, ch) in ctx.ns.substring(with: m.range).enumerated() {
                     let r = NSRange(location: m.range.location + i, length: 1)
                     let isBracket = ch == "[" || ch == "]" || ch == "(" || ch == ")"
                     attrs.append((r, [.foregroundColor: isBracket ? muted : faded]))
                 }
+              }
             }
         }
     }
@@ -230,11 +236,19 @@ enum MarkdownASTStyler {
         let caret: Int
         let config: MarkdownEditorConfiguration
         let wikiLinkID: (NSRange) -> String?
+        let scopedRanges: [NSRange]?
 
         func isActive(_ range: NSRange) -> Bool { NSLocationInRange(caret, range) }
         var theme: MarkdownEditorTheme { config.theme }
         var text: String { ns as String }
         var fullRange: NSRange { NSRange(location: 0, length: ns.length) }
+        /// Whether a range falls in the styled region (nil scope = whole doc).
+        func inScope(_ r: NSRange) -> Bool {
+            guard let scopedRanges else { return true }
+            return scopedRanges.contains { NSIntersectionRange($0, r).length > 0 }
+        }
+        /// Ranges the regex/text passes scan (edited paragraphs, or whole doc).
+        var scanRanges: [NSRange] { scopedRanges ?? [fullRange] }
     }
 
     // MARK: - Blocks
@@ -475,7 +489,7 @@ enum MarkdownASTStyler {
     /// `**`/`#`/`>`/`[]()` syntax visually disappears. Code spans, inline code,
     /// inline LaTeX and image embeds manage their own markers and are skipped.
     private static func shrinkInactiveMarkers(in blocks: [BlockNode], ctx: Ctx, into attrs: inout [StyledRange]) {
-        for block in blocks {
+        for block in blocks where ctx.inScope(block.range) {
             switch block {
             case .heading(_, let range, let markers, let inlines):
                 if !ctx.isActive(range) { shrink(markers, ctx: ctx, into: &attrs) }
