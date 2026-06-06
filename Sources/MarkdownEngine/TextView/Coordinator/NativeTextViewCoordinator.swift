@@ -40,6 +40,24 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
+    // MARK: Header
+    /// Hosts the embedder's full header content, top-pinned inside `headerClipView`.
+    var headerHostingView: NSView?
+    /// Clip container whose height is the reserved top inset. Collapsing animates
+    /// this height between the collapsed (heading) height and the full content
+    /// height, revealing/hiding the lower content while the heading stays put.
+    var headerClipView: NSView?
+    /// Animatable height constraint of `headerClipView`.
+    var headerHeightConstraint: NSLayoutConstraint?
+    /// Drives the collapse/expand animation frame-by-frame.
+    var headerAnimTimer: Timer?
+    /// Observes the hosted content's height (e.g. tags added) to keep the reserved
+    /// height correct while expanded.
+    var headerContentObserver: NSObjectProtocol?
+    /// Last documentId for which the SwiftUI header rootView was rebuilt.
+    var headerDocumentId: String?
+    /// Last applied expanded state, to detect toggles.
+    var lastHeaderExpanded: Bool?
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
     var onLinkClick: ((String) -> Void)?

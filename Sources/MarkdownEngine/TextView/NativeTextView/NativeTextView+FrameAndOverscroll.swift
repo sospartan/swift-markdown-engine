@@ -96,8 +96,10 @@ extension NativeTextView {
         }
 
         let rawHeight = max(segmentMaxY, fragmentMaxY)
-        let measuredHeight = ceil(rawHeight + (textContainerInset.height * 2))
-        return max(measuredHeight, minimumContentHeight)
+        // Add the reserved top header space so the content (and scroll range)
+        // includes the header region that the text was shifted below.
+        let measuredHeight = ceil(rawHeight + (textContainerInset.height * 2) + topContentInset)
+        return max(measuredHeight, minimumContentHeight + topContentInset)
     }
 
     func applyManagedFrameSize(width: CGFloat) {
