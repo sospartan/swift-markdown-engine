@@ -40,26 +40,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
-    // MARK: Header
-    /// Hosts the embedder's full header content, top-pinned inside `headerClipView`.
-    var headerHostingView: NSView?
-    /// Clip container whose height is the reserved top inset. Reveals/hides the
-    /// lower content while the heading stays put.
-    var headerClipView: NSView?
-    /// Active when expanded: `clip.height == host.height`, so the reserved region
-    /// always equals the content's (async-resolved) intrinsic height — self-correcting.
-    var headerEqualityConstraint: NSLayoutConstraint?
-    /// Active when collapsed or animating: `clip.height == constant`. The 60fps timer
-    /// drives `.constant`; on expand-settle we hand back to the equality constraint.
-    var headerConstantConstraint: NSLayoutConstraint?
-    /// Drives the collapse/expand animation frame-by-frame.
-    var headerAnimTimer: Timer?
-    /// Observes the header clip's height; the SOLE writer of `container.headerHeight`.
-    var headerContentObserver: NSObjectProtocol?
-    /// Last documentId for which the SwiftUI header rootView was rebuilt.
-    var headerDocumentId: String?
-    /// Last applied expanded state, to detect toggles.
-    var lastHeaderExpanded: Bool?
+    /// Owns the scroll-away header (build, content refresh, collapse/expand,
+    /// teardown). Created on first reconcile with a non-nil header.
+    var headerController: ScrollingHeaderController?
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
     var onLinkClick: ((String) -> Void)?

@@ -29,6 +29,10 @@ final class NativeTextViewContainer: NSView {
         didSet {
             guard abs(headerHeight - oldValue) > 0.01 else { return }
             restack(propagateWidth: false)
+            // The text view's viewport-fill inflation depends on the band height
+            // (header + text view ≥ viewport, not viewport + band). Re-apply it so a
+            // short doc never grows a phantom scroll range when the band changes.
+            if let textView { textView.applyManagedFrameSize(width: textView.frame.width) }
         }
     }
 

@@ -102,6 +102,30 @@ struct NativeTextViewContainerTests {
         #expect(stack.textView.frame.width == stack.textView.readingColumnWidth)
     }
 
+    @Test func headerGrowthOnShortDocAddsNoPhantomScrollRange() {
+        let stack = makeStack()
+        stack.textView.baseContentHeight = 100
+        stack.textView.applyManagedFrameSize(width: 600)
+        #expect(stack.container.frame.height == 800)
+
+        // Reserving a header band must re-apply the viewport-fill inflation:
+        // header + text view == viewport, otherwise a short doc grows a
+        // phantom scroll range (spurious scroller, clamp-fighting jitter).
+        stack.container.headerHeight = 40
+        #expect(stack.textView.frame.height == 760)
+        #expect(stack.container.frame.height == 800)
+
+        // Expanding the header (animation drives headerHeight per frame).
+        stack.container.headerHeight = 300
+        #expect(stack.textView.frame.height == 500)
+        #expect(stack.container.frame.height == 800)
+
+        // Collapsing back restores the band split.
+        stack.container.headerHeight = 40
+        #expect(stack.textView.frame.height == 760)
+        #expect(stack.container.frame.height == 800)
+    }
+
     @Test func fullWidthModePropagatesViewportWidth() {
         let stack = makeStack()
         stack.textView.baseContentHeight = 900

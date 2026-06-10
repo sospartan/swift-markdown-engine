@@ -75,16 +75,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
 
     /// SwiftUI header hosted above the body and scrolling with it. The engine owns
     /// an `NSHostingView`, reserves its (intrinsic) height at the top of the text
-    /// content, and refreshes its `rootView` when `documentId` changes. The header is
-    /// a sibling of the text view in the scrolled container, so it is fully interactive. Inject
-    /// any required SwiftUI environment into this content before passing it in.
+    /// content, and refreshes the hosted content on every SwiftUI update. The header
+    /// is a sibling of the text view in the scrolled container, so it is fully
+    /// interactive. Inject any required SwiftUI environment into this content
+    /// before passing it in.
     public var header: AnyView?
-    /// Core (AppKit) alternative to ``header``: a raw NSView hosted in the same
-    /// reserved region for non-SwiftUI embedders. The engine sizes/places it but
-    /// does not manage its content. Ignored when ``header`` is non-nil.
-    public var headerView: NSView?
-    /// Visible header height when collapsed — typically just the heading. Content
-    /// below this is clipped. The embedder measures and supplies it so the heading
+    /// Visible header height when collapsed — typically just the top row. Content
+    /// below this is clipped. The embedder measures and supplies it so the top row
     /// stays fully visible while the lower content reveals/hides.
     public var headerCollapsedHeight: CGFloat
     /// Whether the header is expanded to its full content height or collapsed to
@@ -107,7 +104,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)? = nil,
         onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)? = nil,
         header: AnyView? = nil,
-        headerView: NSView? = nil,
         headerCollapsedHeight: CGFloat = 0,
         headerExpanded: Bool = true
     ) {
@@ -126,7 +122,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         self.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
         self.header = header
-        self.headerView = headerView
         self.headerCollapsedHeight = headerCollapsedHeight
         self.headerExpanded = headerExpanded
     }
@@ -441,212 +436,30 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         return coordinator
     }
 }
-
 // MARK: - Scrolling header view
 
 private extension NativeTextViewWrapper {
-    /// Host the header inside a clip container at the top of the content. The clip
-    /// height is the reserved top inset; collapsing animates it between
-    /// `headerCollapsedHeight` and the full content height, so the heading stays
-    /// fixed while the lower content reveals/hides.
+    /// Host the embedder's header above the body, inside the container document
+    /// view. The hosted content refreshes on every SwiftUI update; build,
+    /// collapse/expand, and teardown live in `ScrollingHeaderController`.
     func reconcileHeader(textView: NSTextView, context: Context) {
         let coord = context.coordinator
-        guard let native = textView as? NativeTextView else { return }
+        guard let container = (textView as? NativeTextView)?.superview as? NativeTextViewContainer else { return }
 
-        guard header != nil || headerView != nil else {
-            if coord.headerClipView != nil { removeHeader(coord: coord, native: native) }
+        guard let header else {
+            if let controller = coord.headerController {
+                controller.remove(from: container)
+                coord.headerController = nil
+            }
             return
         }
-
-        if coord.headerClipView == nil {
-            buildHeader(native: native, coord: coord)
-        } else if coord.headerDocumentId != documentId,
-                  let h = header,
-                  let hv = coord.headerHostingView as? NSHostingView<AnyView> {
-            hv.rootView = h
-            coord.headerDocumentId = documentId
-        }
-
-        applyExpansion(textView: textView, coord: coord)
-    }
-
-    func buildHeader(native: NativeTextView, coord: NativeTextViewCoordinator) {
-        guard let container = native.superview as? NativeTextViewContainer else { return }
-        let host: NSView
-        if let header {
-            let h = NSHostingView(rootView: header)
-            if #available(macOS 13.0, *) { h.sizingOptions = [.intrinsicContentSize] }
-            // Ignore the window safe area (the toolbar/navbar region). Otherwise, as the
-            // host scrolls relative to that safe area, SwiftUI adds/removes a TOP inset to
-            // "flow under the navbar" — which shifts the content down inside the host and
-            // pushes the collapsed summary/tags row below the clip mask (the "sliding
-            // window"), and makes the measured intrinsic height oscillate with scrollY.
-            if #available(macOS 13.3, *) { h.safeAreaRegions = [] }
-            host = h
-        } else if let headerView {
-            host = headerView
-        } else { return }
-
-        let clip = NSView()
-        clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.clipsToBounds = true
-        clip.postsFrameChangedNotifications = true
-        // The clip is a SIBLING of the text view inside the container (top band), not a
-        // subview of the text view. Auto-Layout-pinned to the container's top/leading/
-        // trailing; its height is owned by the equality/constant constraints below and
-        // read back into `container.headerHeight`.
-        container.addSubview(clip)
-
-        host.translatesAutoresizingMaskIntoConstraints = false
-        clip.addSubview(host)
-
-        // Two height options for the clip; exactly one is active at a time.
-        //  • equality: clip.height == host.height  → expanded, tracks content live.
-        //  • constant: clip.height == <value>      → collapsed, or animating.
-        let equalityC = clip.heightAnchor.constraint(equalTo: host.heightAnchor)
-        let constantC = clip.heightAnchor.constraint(equalToConstant: max(0, headerCollapsedHeight))
-        NSLayoutConstraint.activate([
-            clip.topAnchor.constraint(equalTo: container.topAnchor),
-            clip.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            clip.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            // Host is full-height (top-pinned); overflow below the clip is hidden.
-            host.topAnchor.constraint(equalTo: clip.topAnchor),
-            host.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: clip.trailingAnchor)
-        ])
-        if headerExpanded { equalityC.isActive = true } else { constantC.isActive = true }
-
-        coord.headerHostingView = host
-        coord.headerClipView = clip
-        coord.headerEqualityConstraint = equalityC
-        coord.headerConstantConstraint = constantC
-        coord.headerDocumentId = documentId
-        coord.lastHeaderExpanded = headerExpanded
-
-        // SOLE writer of `container.headerHeight`: the clip's height drives the header
-        // band, which the container reads to offset the text view. Synchronous (queue
-        // nil) so the body tracks the header with no lag.
-        //
-        // While the *constant* constraint governs (collapsed, or mid-animation) the band
-        // height is its `.constant` — the intended, stable value — NOT the live
-        // `clip.frame.height`, which a scroll-time layout pass can momentarily expose
-        // smaller before the constant re-settles. Reading the constant keeps the
-        // collapsed band rock-stable. When expanded, the equality constraint is active
-        // and `clip.frame.height` (== host height) is the live source.
-        coord.headerContentObserver = NotificationCenter.default.addObserver(
-            forName: NSView.frameDidChangeNotification, object: clip, queue: nil
-        ) { [weak clip, weak container, weak coord] _ in
-            guard let clip, let container else { return }
-            let h = Self.reservedHeaderHeight(clip: clip, coord: coord)
-            guard abs(container.headerHeight - h) > 0.5 else { return }
-            container.headerHeight = h
-        }
-
-        container.layoutSubtreeIfNeeded()
-        container.headerHeight = Self.reservedHeaderHeight(clip: clip, coord: coord)
-    }
-
-    /// The reserved top inset the body should sit below. When the constant
-    /// constraint governs (collapsed / animating) this is its `.constant` — stable
-    /// against transient mid-layout clip frames; otherwise the live clip height.
-    static func reservedHeaderHeight(clip: NSView, coord: NativeTextViewCoordinator?) -> CGFloat {
-        if let constantC = coord?.headerConstantConstraint, constantC.isActive {
-            return constantC.constant
-        }
-        return clip.frame.height
-    }
-
-    func applyExpansion(textView: NSTextView, coord: NativeTextViewCoordinator) {
-        guard let equalityC = coord.headerEqualityConstraint,
-              let constantC = coord.headerConstantConstraint,
-              let clip = coord.headerClipView,
-              let host = coord.headerHostingView else { return }
-        let collapsed = max(0, headerCollapsedHeight)
-
-        if coord.lastHeaderExpanded != headerExpanded {
-            coord.lastHeaderExpanded = headerExpanded
-            // Hand the clip height to the animatable constant constraint.
-            let start = clip.frame.height
-            equalityC.isActive = false
-            constantC.constant = start
-            constantC.isActive = true
-            let target: CGFloat
-            if headerExpanded {
-                host.invalidateIntrinsicContentSize()
-                host.layoutSubtreeIfNeeded()
-                target = max(collapsed, host.fittingSize.height)
-            } else {
-                target = collapsed
-            }
-            animateHeader(to: target, expandedAfter: headerExpanded,
-                          textView: textView, coord: coord)
-        } else if !headerExpanded, coord.headerAnimTimer == nil, constantC.isActive,
-                  abs(constantC.constant - collapsed) > 0.5 {
-            // Collapsed steady: keep the constant in sync with the heading height.
-            constantC.constant = collapsed
-            clip.superview?.layoutSubtreeIfNeeded()
-        }
-        // Expanded steady: the equality constraint already tracks the content.
-    }
-
-    func animateHeader(to target: CGFloat, expandedAfter: Bool,
-                       textView: NSTextView, coord: NativeTextViewCoordinator) {
-        guard let constantC = coord.headerConstantConstraint else { return }
-        coord.headerAnimTimer?.invalidate()
-        let start = constantC.constant
-
-        func settle() {
-            coord.headerAnimTimer = nil
-            if expandedAfter, let equalityC = coord.headerEqualityConstraint {
-                // Hand back to the live-tracking equality constraint.
-                constantC.isActive = false
-                equalityC.isActive = true
-                coord.headerClipView?.superview?.layoutSubtreeIfNeeded()
-            }
-            // One clamp once the height has settled (skipped during the animation).
-            (textView.enclosingScrollView as? ClampedScrollView)?.clampToInsets()
-        }
-
-        guard abs(target - start) > 0.5 else {
-            constantC.constant = target
-            coord.headerClipView?.superview?.layoutSubtreeIfNeeded()
-            settle()
-            return
-        }
-        let duration: CGFloat = 0.32
-        var progress: CGFloat = 0
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak textView, weak coord] t in
-            guard let textView, let coord, let constantC = coord.headerConstantConstraint else {
-                t.invalidate(); return
-            }
-            progress = min(1, progress + (1.0 / 60.0) / duration)
-            let eased = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
-            constantC.constant = start + (target - start) * eased
-            // → clip height change → clip frameDidChange → observer → container.headerHeight → restack.
-            coord.headerClipView?.superview?.layoutSubtreeIfNeeded()
-            if progress >= 1 {
-                t.invalidate()
-                settle()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        coord.headerAnimTimer = timer
-    }
-
-    func removeHeader(coord: NativeTextViewCoordinator, native: NativeTextView) {
-        coord.headerAnimTimer?.invalidate(); coord.headerAnimTimer = nil
-        if let o = coord.headerContentObserver {
-            NotificationCenter.default.removeObserver(o); coord.headerContentObserver = nil
-        }
-        coord.headerClipView?.removeFromSuperview()
-        coord.headerClipView = nil
-        coord.headerHostingView = nil
-        coord.headerEqualityConstraint = nil
-        coord.headerConstantConstraint = nil
-        coord.headerDocumentId = nil
-        coord.lastHeaderExpanded = nil
-        if let container = native.superview as? NativeTextViewContainer {
-            container.headerHeight = 0   // → restack: text view back to y=0, container shrinks
-        }
+        let controller = coord.headerController ?? ScrollingHeaderController()
+        coord.headerController = controller
+        controller.reconcile(
+            header: header,
+            collapsedHeight: headerCollapsedHeight,
+            expanded: headerExpanded,
+            container: container
+        )
     }
 }
