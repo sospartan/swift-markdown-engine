@@ -229,6 +229,40 @@ NativeTextViewWrapper(
   replacement (e.g. an autocomplete result); the engine consumes it
   and clears the binding.
 
+### Height Behavior
+
+By default the editor scrolls internally within whatever height SwiftUI
+gives it. Set `heightBehavior` to `.fitsContent` to make the editor grow
+to fit its content and report that height to SwiftUI, so an enclosing
+`ScrollView` scrolls the page instead:
+
+```swift
+ScrollView {
+    NativeTextViewWrapper(
+        text: $text,
+        configuration: .init(heightBehavior: .fitsContent)
+    )
+}
+```
+
+- The editor reports `headerHeight + text content height` to SwiftUI;
+  no inner scroller appears.
+- Typing additional lines grows the block; deleting lines shrinks it.
+- An empty document shows one line of height.
+- Scroll-wheel events pass through to the enclosing scroll view.
+- Composes with `readingWidth`: the centered column is preserved and
+  height grows to the column's content height.
+- A static scroll-away header's band is included in the reported height.
+  The collapse-on-scroll animation is not meaningful in `.fitsContent`
+  because there is no internal scroll offset to drive it.
+- Switching `heightBehavior` at runtime is supported; the editor
+  reconfigures immediately.
+
+**Trade-offs:** `.fitsContent` forces full-document layout so the total
+height is known, forgoing TextKit-2 viewport virtualization. This is
+fine for small-to-medium inline content; very large documents still work
+but lay out in full.
+
 ### Reading Column
 
 Give long documents a fixed-width, centered column — and let wide GFM

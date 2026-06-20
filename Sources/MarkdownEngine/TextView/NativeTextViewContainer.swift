@@ -89,7 +89,9 @@ final class NativeTextViewContainer: NSView {
             textView.shiftWideTableOverlays(byY: deltaY)
         }
         let viewportH = enclosingScrollView?.contentView.bounds.height ?? 0
-        let totalH = max(headerHeight + textView.frame.height, viewportH)
+        let stacked = headerHeight + textView.frame.height
+        let totalH = (textView.configuration.heightBehavior == .fitsContent) ? stacked
+                                                                              : max(stacked, viewportH)
         if abs(frame.height - totalH) > 0.5 {
             setFrameSize(NSSize(width: w, height: totalH))
         }

@@ -69,6 +69,8 @@ extension NativeTextView {
         visibleHeight: CGFloat,
         lineHeight: CGFloat
     ) -> CGFloat {
+        // Overscroll is a scroll-comfort affordance; meaningless without internal scrolling.
+        guard configuration.heightBehavior == .scrolls else { return 0 }
         let headerHeight = (superview as? NativeTextViewContainer)?.headerHeight ?? 0
         let policy = BottomOverscrollPolicy(
             overscrollPercent: overscrollPercent,
@@ -185,12 +187,18 @@ extension NativeTextView {
 
     func applyManagedFrameSize(width: CGFloat) {
         let contentHeight = max(ceil(baseContentHeight + activeBottomOverscroll), 0)
-        // The container stacks a header band ABOVE this text view, so the text view only
-        // needs to fill the viewport MINUS that band for the whole document view to fill
-        // the viewport on short docs (header + textView ≥ viewport).
-        let headerH = (superview as? NativeTextViewContainer)?.headerHeight ?? 0
-        let scrollViewHeight = max((enclosingScrollView?.contentView.bounds.height ?? 0) - headerH, 0)
-        let height = max(contentHeight, scrollViewHeight)
+        let height: CGFloat
+        switch configuration.heightBehavior {
+        case .scrolls:
+            // The container stacks a header band ABOVE this text view, so the text view only
+            // needs to fill the viewport MINUS that band for the whole document view to fill
+            // the viewport on short docs (header + textView ≥ viewport).
+            let headerH = (superview as? NativeTextViewContainer)?.headerHeight ?? 0
+            let scrollViewHeight = max((enclosingScrollView?.contentView.bounds.height ?? 0) - headerH, 0)
+            height = max(contentHeight, scrollViewHeight)
+        case .fitsContent:
+            height = contentHeight
+        }
         // Reading column: the column keeps its fixed wrap width; its centered X is
         // owned by `centerReadingColumn` (driven from the container's restack).
         let targetWidth = configuration.readingWidth != nil ? readingColumnWidth : max(width, 0)
@@ -207,6 +215,12 @@ extension NativeTextView {
         // Tell the container our height changed so it can re-stack (move us below the
         // header) and size itself. Re-entrancy is guarded inside the container.
         (superview as? NativeTextViewContainer)?.textViewDidResize()
+
+        // Nudge SwiftUI to re-query sizeThatFits when content height changes outside
+        // the text binding (e.g. image/LaTeX load, font-size change, header band).
+        if configuration.heightBehavior == .fitsContent {
+            enclosingScrollView?.invalidateIntrinsicContentSize()
+        }
     }
 
     /// Re-center the column by moving its X (not resizing it) so it stays smooth during live resize.
@@ -282,6 +296,16 @@ extension NativeTextView {
             suppressAutoRevealOnce = false
             return
         }
+        if configuration.heightBehavior == .fitsContent {
+            // The inner scroll view has no scrollable range, so the default
+            // scrollRangeToVisible does nothing useful. Propagate the caret rect
+            // to the enclosing (page-level) scroll view so it keeps the caret
+            // on-screen. AppKit's scrollRectToVisible propagation can stall at
+            // a nested NSScrollView boundary, so we walk up explicitly.
+            super.scrollRangeToVisible(range)
+            propagateCaretRevealToEnclosingScroller(range: range)
+            return
+        }
         // Only the reading column needs manual reveal; default keeps AppKit's native implementation.
         guard configuration.readingWidth != nil else {
             super.scrollRangeToVisible(range)
@@ -320,6 +344,41 @@ extension NativeTextView {
             scrollView.reflectScrolledClipView(cv)
             (scrollView as? ClampedScrollView)?.clampToInsets()
             return false
+        }
+    }
+
+    /// Walk the view hierarchy above the inner scroll view to find the
+    /// enclosing (page-level) scroller and ask it to reveal the caret rect.
+    /// Used in `.fitsContent` where the inner scroll view cannot scroll.
+    private func propagateCaretRevealToEnclosingScroller(range: NSRange) {
+        guard let innerScrollView = enclosingScrollView,
+              let tlm = textLayoutManager,
+              let start = tlm.textContentManager?.location(
+                  tlm.documentRange.location, offsetBy: range.location
+              ) else { return }
+        // Compute the caret rect in window coordinates so we can convert it
+        // into whichever enclosing scroller we find.
+        var caretRect: CGRect?
+        tlm.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
+            caretRect = fragment.layoutFragmentFrame.offsetBy(dx: 0, dy: self.frame.origin.y)
+            return false
+        }
+        guard let rect = caretRect else { return }
+        // Convert from document-view space (container) to the inner scroll
+        // view's coordinate space, then to window, so we can convert into
+        // any ancestor we find.
+        let container = innerScrollView.documentView ?? self
+        let rectInWindow = container.convert(rect, to: nil)
+        // Walk up past the inner scroll view looking for a parent NSScrollView.
+        var view: NSView? = innerScrollView.superview
+        while let v = view {
+            if let outerScrollView = v as? NSScrollView, outerScrollView !== innerScrollView {
+                guard let outerDocView = outerScrollView.documentView else { return }
+                let rectInOuter = outerDocView.convert(rectInWindow, from: nil)
+                outerDocView.scrollToVisible(rectInOuter)
+                return
+            }
+            view = v.superview
         }
     }
 

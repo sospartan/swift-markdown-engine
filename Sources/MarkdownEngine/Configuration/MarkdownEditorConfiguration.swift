@@ -47,6 +47,22 @@ public struct MarkdownEditorConfiguration: Sendable {
     /// Centered reading-column width; wide tables break out to full width. nil = full width (default).
     public var readingWidth: CGFloat?
     public var spellChecking: SpellCheckingPolicy
+    /// How the editor resolves its own height.
+    ///
+    /// - `.scrolls` (default): the editor scrolls internally within whatever
+    ///   height SwiftUI gives it. This is the historical behavior.
+    /// - `.fitsContent`: the editor grows to fit its content and reports that
+    ///   height to SwiftUI, so an enclosing `ScrollView` scrolls the page
+    ///   instead of a nested internal scroller. The editor re-reports its
+    ///   height per keystroke as well as after async content changes (image
+    ///   loads, font-size changes, header band resizes).
+    ///
+    /// Switching at runtime is supported; the editor reconfigures immediately
+    /// (scroller visibility, overscroll, inflation, and intrinsic size all
+    /// update in the same SwiftUI update cycle).
+    ///
+    /// - SeeAlso: ``HeightBehavior``
+    public var heightBehavior: HeightBehavior
 
     public init(
         theme: MarkdownEditorTheme = .default,
@@ -68,7 +84,8 @@ public struct MarkdownEditorConfiguration: Sendable {
         scrollers: ScrollersPolicy = .default,
         textInsets: TextInsets = .default,
         readingWidth: CGFloat? = nil,
-        spellChecking: SpellCheckingPolicy = .default
+        spellChecking: SpellCheckingPolicy = .default,
+        heightBehavior: HeightBehavior = .scrolls
     ) {
         self.theme = theme
         self.services = services
@@ -90,6 +107,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.textInsets = textInsets
         self.readingWidth = readingWidth
         self.spellChecking = spellChecking
+        self.heightBehavior = heightBehavior
     }
 
     public static let `default` = MarkdownEditorConfiguration()
@@ -522,4 +540,77 @@ public struct SafeAreaInsets: Sendable {
     }
 
     public static let `default` = SafeAreaInsets()
+}
+
+// MARK: - Height behavior
+
+extension MarkdownEditorConfiguration {
+    /// How the editor resolves its own height.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// // Inline editor inside a page scroll view:
+    /// ScrollView {
+    ///     NativeTextViewWrapper(
+    ///         text: $text,
+    ///         configuration: .init(heightBehavior: .fitsContent)
+    ///     )
+    /// }
+    /// ```
+    ///
+    /// ## Behavior
+    ///
+    /// In `.fitsContent` mode:
+    /// - The editor reports `headerHeight + text content height` to SwiftUI.
+    /// - Typing grows/shrinks the block per keystroke; SwiftUI re-lays-out.
+    /// - An empty document shows at least one body line of height.
+    /// - Scroll-wheel events pass through to the enclosing scroll view.
+    /// - Caret visibility propagates to the enclosing (page-level) scroll
+    ///   view so editing at the bottom of a tall block keeps the caret
+    ///   on-screen.
+    /// - Async content changes (image/LaTeX finishing layout, font-size
+    ///   change) re-report size via `invalidateIntrinsicContentSize`.
+    /// - Switching between `.scrolls` and `.fitsContent` at runtime is
+    ///   supported; the editor reconfigures immediately.
+    ///
+    /// ## Composition
+    ///
+    /// - **Reading column** (`readingWidth`): the centered fixed-width column
+    ///   is preserved; height grows to the column's content height.
+    /// - **Scroll-away header**: a static header's band is included in the
+    ///   reported height. The collapse-on-scroll animation is driven by the
+    ///   inner scroll offset, which is always zero in `.fitsContent`, so the
+    ///   collapse never triggers. Combining a collapsing header with
+    ///   `.fitsContent` is allowed but the collapse behavior is not meaningful.
+    ///
+    /// ## Trade-offs
+    ///
+    /// `.fitsContent` forces full-document layout so the total height is known.
+    /// For small-to-medium documents this is fine; for very large documents it
+    /// forgoes TextKit-2 viewport virtualization.
+    public enum HeightBehavior: Sendable {
+        /// The editor scrolls internally within the height SwiftUI gives it.
+        /// This is the historical behavior and the default.
+        case scrolls
+
+        /// The editor grows to fit its content and reports that height back to
+        /// SwiftUI, so an enclosing scroll view / page scrolls instead of a
+        /// nested scroll view. Internal scrolling and bottom-overscroll slack
+        /// are disabled in this mode.
+        case fitsContent
+
+        /// Whether the vertical scroller should be shown for this height
+        /// behavior and scroller policy combination.
+        ///
+        /// In `.fitsContent` the editor never scrolls internally, so the
+        /// vertical scroller is always hidden regardless of the policy.
+        /// In `.scrolls` the policy's `hasVerticalScroller` is respected.
+        public func wantsVerticalScroller(for scrollers: ScrollersPolicy) -> Bool {
+            switch self {
+            case .fitsContent: return false
+            case .scrolls:     return scrollers.hasVerticalScroller
+            }
+        }
+    }
 }
