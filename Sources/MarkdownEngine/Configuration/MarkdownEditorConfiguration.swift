@@ -37,6 +37,7 @@ public struct MarkdownEditorConfiguration: Sendable {
     public var blockLatex: BlockLatexStyle
     public var inlineLatex: InlineLatexStyle
     public var checkbox: CheckboxStyle
+    public var blockquote: BlockquoteStyle
     public var link: LinkStyle
     public var paragraph: ParagraphStyle
     public var overscroll: OverscrollPolicy
@@ -76,6 +77,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         blockLatex: BlockLatexStyle = .default,
         inlineLatex: InlineLatexStyle = .default,
         checkbox: CheckboxStyle = .default,
+        blockquote: BlockquoteStyle = .default,
         link: LinkStyle = .default,
         paragraph: ParagraphStyle = .default,
         overscroll: OverscrollPolicy = .default,
@@ -98,6 +100,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.blockLatex = blockLatex
         self.inlineLatex = inlineLatex
         self.checkbox = checkbox
+        self.blockquote = blockquote
         self.link = link
         self.paragraph = paragraph
         self.overscroll = overscroll
@@ -418,6 +421,25 @@ public struct CheckboxStyle: Sendable {
     }
 
     public static let `default` = CheckboxStyle()
+}
+
+// MARK: - Blockquote
+
+/// Extra line height added to blockquote lines.
+///
+/// By default blockquote lines use the font's natural line height with no
+/// extra spacing. Set `extraLineHeight` to add breathing room, matching
+/// the pattern used by `ListStyle.extraLineHeight` and
+/// `ParagraphStyle.lineHeightExtraSpacing`.
+public struct BlockquoteStyle: Sendable {
+    /// Extra height (points) added to the default line height for blockquote lines.
+    public var extraLineHeight: CGFloat
+
+    public init(extraLineHeight: CGFloat = 0) {
+        self.extraLineHeight = extraLineHeight
+    }
+
+    public static let `default` = BlockquoteStyle()
 }
 
 // MARK: - Links

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `BlockquoteStyle` configuration struct with `extraLineHeight` to
+  control line spacing inside blockquotes, following the existing
+  `ListStyle.extraLineHeight` and `ParagraphStyle.lineHeightExtraSpacing`
+  pattern. Defaults to `0` (no extra spacing), preserving existing
+  rendering for embedders that don't set it.
 - Scroll-away header: `NativeTextViewWrapper` gains `header: AnyView?`,
   `headerCollapsedHeight: CGFloat`, and `headerExpanded: Bool`. The engine
   hosts the supplied SwiftUI view above the document body, scrolling with
