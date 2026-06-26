@@ -20,13 +20,8 @@
 
 
 A native AppKit Markdown editor for macOS, built on TextKit 2 and bridged to
-SwiftUI. Live styling, wiki-link support, fenced code blocks with syntax
-highlighting, LaTeX rendering, embedded images, and GitHub-style task
+SwiftUI. Powers **[Nodes](https://apps.apple.com/de/app/nodes-by-the-werk/id6745401961)**. Live styling, wiki-link support, fenced code blocks with syntax highlighting, LaTeX rendering, embedded images, and GitHub-style task
 checkboxes.
-
-## Motivation
-
-When we started building **[Nodes](https://apps.apple.com/de/app/nodes-by-the-werk/id6745401961)** a minimal, beautiful, and fast writing app for macOS, we thought the editor would be the easy part. We were wrong. None of the existing open-source options fit what we needed: a native editor we could drop straight into a Mac app. So we built it on top of TextKit 2. It [wasn't easy](https://blog.krzyzanowskim.com/2025/08/14/textkit-2-the-promised-land/), but the result holds up in production. We're sharing it because we wished something like this had existed when we started.
 
 ## Features
 
