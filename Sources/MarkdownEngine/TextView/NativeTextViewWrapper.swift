@@ -117,6 +117,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// documentIds whose scroll offset to keep; others are forgotten. `nil` keeps all.
     public var retainedScrollDocumentIds: Set<String>?
 
+    /// Embedder-supplied predicate that suppresses the I-beam cursor in edit mode.
+    /// Called on mouse-move with the event location in window coordinates.
+    /// Return `true` to show the arrow cursor instead of the I-beam.
+    public var isCursorExcluded: ((CGPoint) -> Bool)?
+
     public init(
         text: Binding<String>,
         isWikiLinkActive: Binding<Bool> = .constant(false),
@@ -136,7 +141,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         header: AnyView? = nil,
         headerCollapsedHeight: CGFloat = 0,
         headerExpanded: Bool = true,
-        retainedScrollDocumentIds: Set<String>? = nil
+        retainedScrollDocumentIds: Set<String>? = nil,
+        isCursorExcluded: ((CGPoint) -> Bool)? = nil
     ) {
         self._text = text
         self._isWikiLinkActive = isWikiLinkActive
@@ -157,6 +163,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.headerCollapsedHeight = headerCollapsedHeight
         self.headerExpanded = headerExpanded
         self.retainedScrollDocumentIds = retainedScrollDocumentIds
+        self.isCursorExcluded = isCursorExcluded
     }
 
     public func sizeThatFits(
@@ -246,6 +253,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         textView.font = font
         textView.baseFont = font
         textView.allowsUndo = true
+        textView.isCursorExcluded = isCursorExcluded
         textView.isAutomaticSpellingCorrectionEnabled = configuration.spellChecking.automaticSpellingCorrection
         textView.isContinuousSpellCheckingEnabled = configuration.spellChecking.continuousSpellChecking
         textView.isGrammarCheckingEnabled = configuration.spellChecking.grammarChecking
@@ -402,6 +410,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         }
 
         textView.onPasteImage = onPasteImage
+        textView.isCursorExcluded = isCursorExcluded
         textView.setPlaceholder(placeholder)
         // Sync heightBehavior across all three layers (scroll view, text view,
         // coordinator) so a runtime switch fully reconfigures.

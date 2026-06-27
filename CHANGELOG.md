@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   displayed text differs from the source — e.g. node links rendered shorter than `[[Name|UUID]]`,
   LaTeX, or images — which the legacy `findScrollToRange` (host-computed source-coordinate ranges)
   highlighted at the wrong offset. Opt-in; `findScrollToRange` is unchanged for existing embedders.
+- `NativeTextView.isCursorExcluded: ((CGPoint) -> Bool)?` — embedder-supplied
+  predicate that suppresses the edit-mode I-beam cursor when the mouse is inside
+  a defined exclusion zone (e.g. a formatting toolbar). When the closure returns
+  `true`, `mouseMoved:` skips calling `super.mouseMoved` to avoid NSTextView's
+  built-in I-beam cursor, setting the arrow cursor instead. Exposed through
+  `NativeTextViewWrapper.isCursorExcluded`.
 
 ## [0.7.1] - 2026-06-20
 
@@ -34,8 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scroll position is remembered per document across switches, and Writing Tools
   results stay styled and visible after accept. (#70)
 - Empty-file placeholder no longer clips to one line after a view rebuild. (#69)
-
-## [Unreleased]
 
 ### Added
 - Scroll-away header: `NativeTextViewWrapper` gains `header: AnyView?`,

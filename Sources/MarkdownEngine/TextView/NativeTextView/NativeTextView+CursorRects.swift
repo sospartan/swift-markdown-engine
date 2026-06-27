@@ -12,13 +12,28 @@ import AppKit
 extension NativeTextView {
 
     override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        applyReadOnlyCursor(for: event)
+        if isInCursorExclusionZone(event) {
+            NSCursor.arrow.set()
+        } else {
+            super.mouseMoved(with: event)
+            applyReadOnlyCursor(for: event)
+        }
     }
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        applyReadOnlyCursor(for: event)
+        if isInCursorExclusionZone(event) {
+            NSCursor.arrow.set()
+        } else {
+            applyReadOnlyCursor(for: event)
+        }
+    }
+
+    /// True when the mouse is inside an embedder-defined exclusion zone
+    /// (e.g. a formatting toolbar) and edit-mode I-beam should be suppressed.
+    private func isInCursorExclusionZone(_ event: NSEvent) -> Bool {
+        guard isEditable, let excluded = isCursorExcluded else { return false }
+        return excluded(event.locationInWindow)
     }
 
     /// In read-only mode, override NSTextView's I-beam: pointing hand over a

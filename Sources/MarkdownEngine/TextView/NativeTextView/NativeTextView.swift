@@ -57,6 +57,12 @@ final class NativeTextView: NSTextView {
     /// managed by `NativeTextView+Placeholder.swift`.
     weak var placeholderView: PlaceholderLabelView?
 
+    // MARK: Cursor exclusion
+    /// Embedder-supplied predicate that suppresses the I-beam cursor in edit mode.
+    /// Called on every mouse-move with the event location in window coordinates.
+    /// Return `true` to show the arrow cursor instead of the edit-mode I-beam.
+    var isCursorExcluded: ((CGPoint) -> Bool)?
+
     // MARK: Wide-table overlay state
     /// Live NSScrollView per wide table; keyed by source-ID hash.
     var wideTableOverlays: [Int: WideTableOverlay] = [:]
