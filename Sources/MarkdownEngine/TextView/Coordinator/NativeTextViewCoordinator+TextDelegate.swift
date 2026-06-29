@@ -218,6 +218,43 @@ extension NativeTextViewCoordinator {
         let prevActive = activeTokenIndices
         activeTokenIndices = MarkdownDetection.computeActiveTokenIndices(selectionRange: selRange, tokens: tokens, in: nsText, suppressed: !tv.isEditable)
         filterImageEmbedActiveTokens(parsed: parsed, text: nsText, selectionLocation: selRange.location)
+
+        // Snap-back: when the caret LEFT a wiki/image token, re-sync its displayed name to the live target name.
+        if selRange.length == 0,
+           currentEventType != .leftMouseDragged, currentEventType != .periodic,
+           !isProgrammaticEdit, !tv.hasMarkedText() {
+            let leftTokens = prevActive.subtracting(activeTokenIndices)
+            for idx in leftTokens.sorted() where idx >= 0 && idx < tokens.count {
+                let token = tokens[idx]
+                guard token.kind == .wikiLink || token.kind == .imageEmbed else { continue }
+                if let newCaret = resyncWikiLinkNameOnLeave(tv, token: token, caretLoc: selRange.location) {
+                    // Dismiss any inline preview before the early return (the nested setSelectedRange
+                    // re-entry recomputes it for the final caret, but clear it here too — mirrors :203-205).
+                    isImageEmbedActive = false
+                    isWikiLinkActive = false
+                    onInlineSelectionChange?(nil)
+                    let clamped = min(max(newCaret, 0), (tv.string as NSString).length)
+                    // Only re-settle (and suppress the reveal) when the caret actually moved. If the
+                    // link was AFTER the caret the location is unchanged → setSelectedRange would be a
+                    // no-op that never consumes suppressAutoRevealOnce, leaking it onto the next reveal.
+                    if clamped != selRange.location {
+                        (tv as? NativeTextView)?.suppressAutoRevealOnce = true
+                        tv.setSelectedRange(NSRange(location: clamped, length: 0))
+                    }
+                    // The snap-back's didChangeText restyles the CARET's paragraph, not the LINK's, so
+                    // the link keeps its pre-leave ACTIVE styling (raw [[ ]] stays visible). Restyle the
+                    // link's own paragraph (token.range.location is before the in-name edit, so it's
+                    // stable) — the caret is now outside, so its markers collapse to a rendered link.
+                    let healedNS = tv.string as NSString
+                    if healedNS.length > 0 {
+                        let linkPara = healedNS.paragraphRange(for: NSRange(location: min(token.range.location, healedNS.length - 1), length: 0))
+                        restyleParagraphs([linkPara], in: tv)
+                    }
+                    return
+                }
+            }
+        }
+
         updateAutocorrectSettings(
             tv,
             caretLocation: selLoc,
@@ -336,15 +373,31 @@ extension NativeTextViewCoordinator {
         if let inlineContext {
             let openingMarkerLength = inlineContext.selectionKind == .imageEmbed ? 3 : 2
             let displayRange = selectionDisplayRange(for: inlineContext.token, openingMarkerLength: openingMarkerLength)
-            let placeholder = nsString.substring(with: displayRange)
+            // Image embeds: rebuild the placeholder as the STORAGE form (`![[Name|uuid|width]]`) so
+            // NodeLinkPreview's ImageEmbedReference.parse can recover the width on re-pick. The width
+            // no longer lives in the editor text — it sits in the `.wikiLinkID` side-channel.
+            let placeholder: String
+            if case .imageEmbed(let token) = inlineContext {
+                let embedName = nsString.substring(with: token.contentRange)
+                if let suffix = wikiLinkID(for: token.range), !suffix.isEmpty {
+                    placeholder = "![[\(embedName)|\(suffix)]]"
+                } else {
+                    placeholder = "![[\(embedName)]]"
+                }
+            } else {
+                placeholder = nsString.substring(with: displayRange)
+            }
             let storageRange = inlineContext.selectionKind == .wikiLink
                 ? storageRange(containingDisplayLocation: selLocation) ?? storageRange(forDisplayRange: displayRange)
                 : nil
             let previewRect = tv.viewRect(forCharacterRange: displayRange, using: layoutBridge)
                 ?? tv.viewRect(forCharacterRange: tv.selectedRange(), using: layoutBridge)
 
+            // Only autocomplete while TYPING — not when the caret merely lands in an existing link via
+            // a click (mirrors the image-embed gate). Clicking into a complete [[Name]] shouldn't pop
+            // the picker; typing a name does.
             let shouldShowInlinePreview =
-                inlineContext.selectionKind == .wikiLink
+                (inlineContext.selectionKind == .wikiLink && isTyping)
                 || (inlineContext.selectionKind == .imageEmbed && imageEmbedShowsInlinePreview)
             if shouldShowInlinePreview, let previewRect {
                 let selection = WikiLinkSelection(
@@ -422,10 +475,50 @@ extension NativeTextViewCoordinator {
         if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
             return handleBacktab(textView)
         }
+        // While an inline [[…]] / ![[…]] preview is open, route ↑/↓/Enter/Esc to the embedder's
+        // autocomplete list (it returns true to consume the key; false → normal editor handling).
+        if (isWikiLinkActive || isImageEmbedActive), let handler = onInlinePreviewKey {
+            let key: InlinePreviewKey?
+            switch commandSelector {
+            case #selector(NSResponder.moveUp(_:)): key = .moveUp
+            case #selector(NSResponder.moveDown(_:)): key = .moveDown
+            case #selector(NSResponder.insertNewline(_:)): key = .confirm   // ⌘↵ → handled in performKeyEquivalent
+            case #selector(NSResponder.cancelOperation(_:)): key = .cancel
+            default: key = nil
+            }
+            if let key, handler(key) { return true }
+        }
         return false
     }
 
     public func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        // Edit zone: a click on the outer ~30% of a node link's first/last name char places the caret
+        // just outside the markers (before '[[' / after ']]') to reveal the source for editing instead
+        // of navigating. Editable views only — read-only links must stay navigable.
+        if textView.isEditable, let storage = textView.textStorage {
+            var linkRange = NSRange(location: NSNotFound, length: 0)
+            let editZoneMinNameLength = 3   // 1–2 char names stay fully clickable for navigation
+            if storage.attribute(.link, at: charIndex, longestEffectiveRange: &linkRange,
+                                 in: NSRange(location: 0, length: storage.length)) != nil,
+               linkRange.length >= editZoneMinNameLength {
+                // Caret lands on the token's markers (no .link there, so the mouse-on-link guard in
+                // textViewDidChangeSelection doesn't suppress the reveal).
+                let token = parsedDocument(for: textView.string).tokens
+                    .first { $0.kind == .wikiLink && NSLocationInRange(charIndex, $0.range) }
+                let edgeFraction: CGFloat = 0.3
+                let frac = clickFractionThroughGlyph(textView, charIndex: charIndex)
+                if charIndex == linkRange.location, frac.map({ $0 <= edgeFraction }) ?? true {
+                    let caret = token?.range.location ?? linkRange.location          // before '[['
+                    textView.setSelectedRange(NSRange(location: caret, length: 0))
+                    return true
+                }
+                if charIndex == NSMaxRange(linkRange) - 1, frac.map({ $0 >= 1 - edgeFraction }) ?? true {
+                    let caret = token.map { NSMaxRange($0.range) } ?? NSMaxRange(linkRange)  // after ']]'
+                    textView.setSelectedRange(NSRange(location: caret, length: 0))
+                    return true
+                }
+            }
+        }
         guard let target = WikiLinkService.resolveIdentifier(link: link, textView: textView, at: charIndex) else {
             return false
         }
@@ -435,6 +528,26 @@ extension NativeTextViewCoordinator {
             self.onLinkClick?(target)
         }
         return true
+    }
+
+    /// Horizontal fraction (0 = leading, 1 = trailing) of the current click through the glyph at
+    /// `charIndex`, or nil if unresolved. Coordinates mirror NativeTextView+CursorRects.
+    private func clickFractionThroughGlyph(_ textView: NSTextView, charIndex: Int) -> CGFloat? {
+        guard let event = NSApp.currentEvent,
+              let tlm = textView.textLayoutManager,
+              let tcm = tlm.textContentManager,
+              let start = tcm.location(tlm.documentRange.location, offsetBy: charIndex),
+              let end = tcm.location(start, offsetBy: 1),
+              let range = NSTextRange(location: start, end: end) else { return nil }
+        let viewPoint = textView.convert(event.locationInWindow, from: nil)
+        let containerX = viewPoint.x - textView.textContainerOrigin.x
+        var glyphFrame: CGRect?
+        tlm.enumerateTextSegments(in: range, type: .standard, options: []) { _, segFrame, _, _ in
+            glyphFrame = segFrame
+            return false
+        }
+        guard let f = glyphFrame, f.width > 0 else { return nil }
+        return (containerX - f.minX) / f.width
     }
 
     func updateSelectionStates(_ tv: NSTextView) {
