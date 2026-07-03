@@ -12,23 +12,15 @@ import AppKit
 
 extension NativeTextView {
     override func mouseDown(with event: NSEvent) {
-        // DIAG: every physical click — is it on a link, is a text-input session
-        // (marked text) active? A "mouseDown onLink=true" with NO following
-        // "click enter" (see clickedOnLink) = AppKit never ran link tracking.
-        let diagPoint = convert(event.locationInWindow, from: nil)
-        let diagIdx = characterIndexForInsertion(at: diagPoint)
-        let diagOnLink: Bool = {
-            guard let ts = textStorage, diagIdx >= 0, diagIdx < ts.length else { return false }
-            return ts.attribute(.link, at: diagIdx, effectiveRange: nil) != nil
+        // Was the click point on a link? Captured before super.mouseDown, which
+        // may park the caret elsewhere. Used to rescue a dropped link click.
+        let clickPointOnLink: Bool = {
+            let idx = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+            guard let ts = textStorage, idx >= 0, idx < ts.length else { return false }
+            return ts.attribute(.link, at: idx, effectiveRange: nil) != nil
         }()
-        linkDiag.notice("mouseDown clicks=\(event.clickCount) idx=\(diagIdx) onLink=\(diagOnLink) marked=\(self.hasMarkedText()) editable=\(self.isEditable) key=\(self.window?.isKeyWindow ?? false)")
-        if let toggled = toggleTaskCheckboxIfHit(event: event), toggled {
-            linkDiag.notice("mouseDown -> taskCheckbox toggled")
-            return
-        }
-        if remapClickInParagraphSpacing(event: event) {
-            return
-        }
+        if let toggled = toggleTaskCheckboxIfHit(event: event), toggled { return }
+        if remapClickInParagraphSpacing(event: event) { return }
         dragStartMouseScreenLoc = NSEvent.mouseLocation
         let boostTimer = Timer(timeInterval: 1.0 / configuration.dragSelection.ticksPerSecond, repeats: true) { [weak self] _ in
             self?.performDragBoostTick()
@@ -39,7 +31,44 @@ extension NativeTextView {
             dragStartMouseScreenLoc = nil
         }
 
-        super.mouseDown(with: event)
+        linkClickDidFire = false
+        linkClickDidNavigate = false
+        let preClickSelection = selectedRange()
+        let downLoc = NSEvent.mouseLocation
+        super.mouseDown(with: event)   // modal tracking loop — returns after mouseUp
+        let travel = hypot(NSEvent.mouseLocation.x - downLoc.x, NSEvent.mouseLocation.y - downLoc.y)
+
+        // AppKit intermittently drops clickedOnLink for a stationary single click
+        // on a link (caret placed, delegate never called). Re-dispatch it through
+        // the same delegate path — clickedOnLink applies the edit zone/resolution.
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if clickPointOnLink, !linkClickDidFire, event.clickCount == 1, mods.isEmpty,
+           travel < 2, selectedRange().length == 0,
+           let ts = textStorage, ts.length > 0 {
+            let caret = min(selectedRange().location, ts.length - 1)
+            let onCaret = ts.attribute(.link, at: caret, effectiveRange: nil) != nil
+            let linkAttr = onCaret ? ts.attribute(.link, at: caret, effectiveRange: nil)
+                : (caret > 0 ? ts.attribute(.link, at: caret - 1, effectiveRange: nil) : nil)
+            let linkIdx = onCaret ? caret : caret - 1
+            if let linkAttr, let dlg = delegate as? NativeTextViewCoordinator,
+               !dlg.textView(self, clickedOnLink: linkAttr, at: linkIdx) {
+                // Web link: the delegate declines; open the URL as AppKit would.
+                if let url = (linkAttr as? URL) ?? (linkAttr as? String).flatMap(URL.init(string:)),
+                   url.scheme != nil {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+
+        // A link click is navigation, not caret placement: restore the pre-click
+        // selection (AppKit parked the caret in the link). Edit-zone clicks don't
+        // navigate, so they keep their caret.
+        if linkClickDidNavigate {
+            let docLen = (string as NSString).length
+            let loc = min(preClickSelection.location, docLen)
+            let len = min(preClickSelection.length, max(0, docLen - loc))
+            setSelectedRange(NSRange(location: loc, length: len))
+        }
     }
 
     func performDragBoostTick() {

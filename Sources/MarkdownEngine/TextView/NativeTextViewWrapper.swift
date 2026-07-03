@@ -405,14 +405,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             if #available(macOS 15.0, *), textView.isWritingToolsActive { return true }
             return context.coordinator.isWritingToolsActive
         }()
-        if context.coordinator.lastLoggedWTGate != wtActive {
-            context.coordinator.lastLoggedWTGate = wtActive
-            let appleFlag: Bool = {
-                if #available(macOS 15.0, *) { return textView.isWritingToolsActive }
-                return false
-            }()
-            linkDiag.notice("wtGate active=\(wtActive) apple=\(appleFlag) coord=\(context.coordinator.isWritingToolsActive) nodeSwitch=\(isNodeSwitch)")
-        }
 
         if wtActive && isNodeSwitch {
             // User switched files while Writing Tools was active — discard the
@@ -456,6 +448,21 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             textView.recalcOverscroll(for: nsView)
             (nsView as? ClampedScrollView)?.clampToInsets()
             nsView.invalidateIntrinsicContentSize()
+        }
+        // Sync rawSourceMode; a flip rebuilds in the new presentation. It
+        // changes display text ([[Name]] ↔ [[Name|UUID]]), so drop the doc's
+        // undo stack — surviving actions would replay at stale ranges.
+        let rawSourceModeChanged = context.coordinator.configuration.rawSourceMode != configuration.rawSourceMode
+        if rawSourceModeChanged {
+            context.coordinator.configuration.rawSourceMode = configuration.rawSourceMode
+            textView.configuration.rawSourceMode = configuration.rawSourceMode
+            textView.breakUndoCoalescing()
+            context.coordinator.undoManagers[documentId]?.removeAllActions()
+            context.coordinator.didInitialFormatting = false
+            // isWikiLinkActive is a SwiftUI binding — defer off the update pass
+            // to avoid "Modifying state during view update".
+            let coordinator = context.coordinator
+            DispatchQueue.main.async { coordinator.isWikiLinkActive = false }
         }
         // Reading column centers by POSITION (container subview), so the text inset is constant.
         let desiredTextInset = NSSize(
@@ -561,7 +568,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.rebuildTextStorageAndStyle(
             textView,
             from: text,
-            invalidateLayout: isNodeSwitch
+            invalidateLayout: isNodeSwitch || rawSourceModeChanged
         )
         textView.recalcOverscroll(for: nsView)
         (nsView as? ClampedScrollView)?.clampToInsets()

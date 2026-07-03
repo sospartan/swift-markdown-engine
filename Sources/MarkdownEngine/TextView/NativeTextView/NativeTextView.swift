@@ -26,6 +26,11 @@ final class NativeTextView: NSTextView {
     /// Coalesces wide-table overlay updates to once per runloop (resize fires many per frame).
     var pendingWideTableOverlayUpdate = false
     var suppressAutoRevealOnce: Bool = false
+    // Set by clickedOnLink during a mouseDown: did the delegate fire (so
+    // mouseDown can re-dispatch a click AppKit dropped), and did it navigate
+    // (so the pre-click caret is restored — a link click isn't caret placement).
+    var linkClickDidFire = false
+    var linkClickDidNavigate = false
 
     // MARK: Configuration
     var configuration: MarkdownEditorConfiguration = .default {
