@@ -83,6 +83,15 @@ struct TextStylingService {
             configuration: configuration
         )
 
+        // Block-level attributes like `.callout` can span multiple paragraphs.
+        // Make sure every touched paragraph is reset and restyled so the whole
+        // block stays consistent, not just the edited paragraph.
+        let fullText = textView.string as NSString
+        let calloutRanges = styledRanges.compactMap { entry -> NSRange? in
+            entry.attributes[.callout] != nil ? entry.range : nil
+        }
+        let affectedParagraphs = normalize(paragraphs + calloutRanges.map { fullText.paragraphRange(for: $0) })
+
         let spellingDisabledRanges = styledRanges.compactMap { (range, attrs) -> NSRange? in
             attrs[.spellingState] as? Int == 0 ? range : nil
         }
@@ -96,7 +105,7 @@ struct TextStylingService {
         for disabledRange in spellingDisabledRanges {
             textView.textStorage?.addAttribute(.spellingState, value: 0, range: disabledRange)
         }
-        for paragraph in paragraphs {
+        for paragraph in affectedParagraphs {
             textView.textStorage?.setAttributes([
                 .font: baseFont,
                 .foregroundColor: configuration.theme.bodyText,

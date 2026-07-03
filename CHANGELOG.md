@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediately; the current document's undo stack is dropped on a switch
   because undo actions recorded against the other mode's display text would
   replay at stale ranges. Default `false` — existing embedders are unaffected.
+- Callout block support: `[!NOTE]`, `[!WARNING]`, `[!TIP]`, `[!IMPORTANT]`, and
+  `[!CAUTION]` blocks inside blockquotes are now rendered with a rounded
+  background fill, color-coded left accent bar, SF Symbol icon, and bold title
+  text. In reading mode the raw Markdown source is hidden and replaced by the
+  rendered overlay; in edit mode (`isActive`) the raw source is visible with
+  muted styling. Custom titles after the type (e.g. `[!NOTE] My Title`) are
+  supported. A new `CalloutAttribute` class consolidates callout metadata (type,
+  title, edit-state flag) under a single `.callout` attributed-string key. Edits
+  inside a callout block trigger full-block paragraph restyling to keep the
+  block visually consistent.
 
 ### Fixed
 - Inline syntax markers (`**`, `*`, `~~`, `==`) now use `mutedText` foreground
@@ -34,7 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   competing `.link` attribute on top of the link — making the raw URL independently
   navigable and offsetting the click edit zone. Bare URLs outside links still
   autolink; URLs inside code were already excluded.
-
 ## [0.8.0] - 2026-06-28
 
 ### Added

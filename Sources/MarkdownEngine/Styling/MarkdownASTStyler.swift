@@ -250,11 +250,16 @@ enum MarkdownASTStyler {
                         #"\[[^\]\r\n]+\]\([^)\r\n]*$"#, #"\[[^\]\r\n]+\]\(\)"#]
         let muted = ctx.theme.mutedText
         let faded = ctx.theme.incompleteLink.withAlphaComponent(ctx.config.link.incompleteLinkAlpha)
+        let calloutMarkerRanges = attrs.compactMap { entry -> NSRange? in
+            entry.attributes[.calloutMarker] != nil ? entry.range : nil
+        }
         for pattern in patterns {
             guard let re = regex(pattern, false) else { continue }
             for scan in ctx.scanRanges {
               for m in re.matches(in: ctx.text, options: [], range: scan)
-                  where !isInCode(m.range, codeRanges) && !isInCode(m.range, checkboxRanges) {
+                  where !isInCode(m.range, codeRanges)
+                    && !isInCode(m.range, checkboxRanges)
+                    && !calloutMarkerRanges.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
                 for (i, ch) in ctx.ns.substring(with: m.range).enumerated() {
                     let r = NSRange(location: m.range.location + i, length: 1)
                     let isBracket = ch == "[" || ch == "]" || ch == "(" || ch == ")"
@@ -326,8 +331,8 @@ enum MarkdownASTStyler {
             styleInlines(inlines, font: headingFont, ctx: ctx, into: &attrs)
 
         case .blockquote(let range, let inlines):
-            styleBlockquote(range: range, ctx: ctx, into: &attrs)
             styleInlines(inlines, font: font, ctx: ctx, into: &attrs)
+            styleBlockquote(range: range, ctx: ctx, into: &attrs)
 
         case .list(_, let items):
             for item in items {
@@ -344,14 +349,23 @@ enum MarkdownASTStyler {
         }
     }
 
+    private static let calloutRegex = try! NSRegularExpression(
+        pattern: #"^\s*\[!([A-Za-z]+)\]\s*(.*)$"#,
+        options: []
+    )
+
     /// Per-line blockquote: indent, mute content, hide/show `>` markers, tag first char with bar level.
     private static func styleBlockquote(range: NSRange, ctx: Ctx, into attrs: inout [StyledRange]) {
         let indentPerLevel = MarkdownTextLayoutFragment.blockquoteIndentPerLevel
+        let active = ctx.isActive(range)
+        let callout = detectCallout(in: range, ctx: ctx, into: &attrs)
+
         var lineStart = range.location
         let end = NSMaxRange(range)
         while lineStart < end {
             let line = ctx.ns.lineRange(for: NSRange(location: lineStart, length: 0))
             let lineEnd = NSMaxRange(line)
+            let isFirstLine = lineStart == range.location
             var i = line.location
             var indent = 0
             while i < lineEnd, indent < 3, ctx.ns.character(at: i) == 0x20 || ctx.ns.character(at: i) == 0x09 {
@@ -376,11 +390,13 @@ enum MarkdownASTStyler {
             let contentRange = NSRange(location: j, length: max(0, contentEnd - j))
             let tokenRange = NSRange(location: line.location, length: contentEnd - line.location)
 
+            // Paragraph metrics.
             let textIndent = CGFloat(level) * indentPerLevel + indentPerLevel * 0.5
             let para = NSMutableParagraphStyle()
             para.firstLineHeadIndent = textIndent
             para.headIndent = textIndent
-            let lineHeight = ctx.baseLineHeight + ctx.config.blockquote.extraLineHeight
+            let calloutExtraHeight: CGFloat = (callout != nil) ? 2 : 0
+            let lineHeight = ctx.baseLineHeight + ctx.config.blockquote.extraLineHeight + calloutExtraHeight
             para.minimumLineHeight = lineHeight
             para.maximumLineHeight = lineHeight
             // Inner quote lines stay tight (0); the LAST line gets the normal
@@ -388,16 +404,117 @@ enum MarkdownASTStyler {
             para.paragraphSpacingBefore = 0
             attrs.append((ctx.ns.paragraphRange(for: tokenRange), [.paragraphStyle: para]))
 
-            if contentRange.length > 0 {
-                attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
-            }
-            if ctx.isActive(tokenRange) {
-                attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
-            } else {
-                attrs.append((markerRange, [.foregroundColor: NSColor.clear, .font: ctx.inlineMarkerFont]))
-            }
-            // Whole line, not just the first char, so each soft-wrapped visual line
+            // Content styling: callouts get special treatment; plain blockquotes get muted text.
+            styleCalloutContent(
+                callout: callout, active: active, isFirstLine: isFirstLine,
+                tokenRange: tokenRange, contentRange: contentRange, markerRange: markerRange,
+                ctx: ctx, into: &attrs
+            )
+
             attrs.append((tokenRange, [.blockquoteLevel: level]))
+        }
+    }
+
+    // MARK: - Callout Detection
+
+    private struct CalloutInfo {
+        let type: String
+        let title: String
+    }
+
+    private static func detectCallout(in range: NSRange, ctx: Ctx, into attrs: inout [StyledRange]) -> CalloutInfo? {
+        let firstLine = ctx.ns.lineRange(for: NSRange(location: range.location, length: 0))
+        var i = firstLine.location
+        var indent = 0
+        while i < NSMaxRange(firstLine), indent < 3,
+              ctx.ns.character(at: i) == 0x20 || ctx.ns.character(at: i) == 0x09 {
+            i += 1; indent += 1
+        }
+        var level = 0
+        var j = i
+        while j < NSMaxRange(firstLine), ctx.ns.character(at: j) == 0x3E /* > */ {
+            level += 1; j += 1
+            if j < NSMaxRange(firstLine), ctx.ns.character(at: j) == 0x20 || ctx.ns.character(at: j) == 0x09 {
+                j += 1
+            }
+        }
+        guard level > 0 else { return nil }
+        var firstContentEnd = NSMaxRange(firstLine)
+        if firstContentEnd > j {
+            let last = ctx.ns.character(at: firstContentEnd - 1)
+            if last == 0x0A || last == 0x0D { firstContentEnd -= 1 }
+        }
+        let firstContentRange = NSRange(location: j, length: max(0, firstContentEnd - j))
+        guard firstContentRange.length > 0 else { return nil }
+
+        let contentStr = ctx.ns.substring(with: firstContentRange)
+        let contentNS = contentStr as NSString
+        guard let match = calloutRegex.firstMatch(
+            in: contentStr,
+            options: [],
+            range: NSRange(location: 0, length: contentNS.length)
+        ) else { return nil }
+
+        let type = contentNS.substring(with: match.range(at: 1)).lowercased()
+        let rawTitle = contentNS.substring(with: match.range(at: 2))
+        let trimmedTitle = rawTitle.trimmingCharacters(in: .whitespaces)
+        let title = trimmedTitle.isEmpty ? type.capitalized : trimmedTitle
+
+        // Mark the literal `[!TYPE]` range so later regex passes leave it alone.
+        let matchRange = match.range(at: 0)
+        let open = contentNS.range(of: "[", options: [], range: matchRange)
+        let close = contentNS.range(of: "]", options: .backwards, range: matchRange)
+        if open.location != NSNotFound, close.location != NSNotFound {
+            let markerDocRange = NSRange(
+                location: firstContentRange.location + open.location,
+                length: close.location - open.location + 1
+            )
+            attrs.append((markerDocRange, [.calloutMarker: true]))
+        }
+
+        return CalloutInfo(type: type, title: title)
+    }
+
+    /// Assign callout-specific attributes to a blockquote line's content and marker.
+    private static func styleCalloutContent(
+        callout: CalloutInfo?, active: Bool, isFirstLine: Bool,
+        tokenRange: NSRange, contentRange: NSRange, markerRange: NSRange,
+        ctx: Ctx, into attrs: inout [StyledRange]
+    ) {
+        if let callout {
+            let ca = CalloutAttribute(type: callout.type, title: callout.title, isEditing: active)
+            attrs.append((tokenRange, [.callout: ca]))
+            if active {
+                if isFirstLine {
+                    attrs.append((contentRange, [
+                        .foregroundColor: ctx.theme.mutedText,
+                        .backgroundColor: NSColor.clear,
+                    ]))
+                } else if contentRange.length > 0 {
+                    attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
+                }
+            } else {
+                if isFirstLine {
+                    attrs.append((contentRange, [
+                        .foregroundColor: NSColor.clear,
+                        .backgroundColor: NSColor.clear,
+                        .font: ctx.inlineMarkerFont,
+                    ]))
+                } else if contentRange.length > 0 {
+                    attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
+                }
+            }
+        } else if contentRange.length > 0 {
+            attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
+        }
+
+        // `>` marker visibility.
+        if active && callout != nil {
+            attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
+        } else if ctx.isActive(tokenRange) {
+            attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
+        } else {
+            attrs.append((markerRange, [.foregroundColor: NSColor.clear, .font: ctx.inlineMarkerFont]))
         }
     }
 
