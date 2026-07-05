@@ -69,6 +69,13 @@ extension NativeTextViewCoordinator {
                 suppressed: !textView.isEditable
             )
 
+            let rawWidth = textView.textContainer?.size.width
+            let contentWidthForStyle: CGFloat = {
+                if let w = rawWidth, w > 0, w.isFinite, w < 10000 { return w }
+                guard textView.bounds.width > 0 else { return 720 }
+                return textView.bounds.width - textView.textContainerInset.width * 2
+            }()
+
             let ranges = MarkdownStyler.styleAttributes(
                 text: displayText,
                 fontName: fontName,
@@ -82,7 +89,8 @@ extension NativeTextViewCoordinator {
                 // wikiLinkMetadata was just refreshed by makeDisplayState above, so ranges match here.
                 wikiLinkIDProvider: { [weak self] range in self?.wikiLinkID(for: range) },
                 precomputedTokens: tokens,
-                configuration: configuration
+                configuration: configuration,
+                contentWidth: contentWidthForStyle
             )
             for (range, attrs) in ranges {
                 for (key, value) in attrs {
@@ -127,10 +135,12 @@ extension NativeTextViewCoordinator {
             configuration: configuration
         )
 
+        let expandedCandidates = expandCalloutParagraphs(paragraphCandidates, in: textView)
+
         TextStylingService.restyle(
             textView: textView,
             layoutBridge: layoutBridge,
-            paragraphCandidates: paragraphCandidates,
+            paragraphCandidates: expandedCandidates,
             baseFont: baseFont,
             paragraphStyle: paragraphStyle,
             caretLocation: textView.isEditable ? textView.selectedRange().location : -1,
@@ -258,6 +268,25 @@ extension NativeTextViewCoordinator {
             suppressed: !textView.isEditable
         )
         restyleTextView(textView, paragraphCandidates: paragraphs, tokens: tokens)
+    }
+
+    private func expandCalloutParagraphs(_ candidates: [NSRange], in textView: NSTextView) -> [NSRange] {
+        guard let ts = textView.textStorage else { return candidates }
+        let nsText = textView.string as NSString
+        var result = candidates
+        var idx = 0
+        while idx < ts.length {
+            var attrRange = NSRange(location: 0, length: 0)
+            guard ts.attribute(.callout, at: idx, effectiveRange: &attrRange) is CalloutAttribute else {
+                idx = NSMaxRange(attrRange); continue
+            }
+            let paraRange = nsText.paragraphRange(for: attrRange)
+            if candidates.contains(where: { NSIntersectionRange($0, paraRange).length > 0 }) {
+                result.append(paraRange)
+            }
+            idx = NSMaxRange(attrRange)
+        }
+        return TextStylingService.normalize(result)
     }
 
     func applyInlineReplacement(_ request: InlineReplacementRequest, to textView: NSTextView) {

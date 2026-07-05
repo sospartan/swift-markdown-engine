@@ -43,11 +43,13 @@ final class CalloutAttribute {
     let type: String
     let title: String
     var isEditing: Bool
+    let id: UUID
 
-    init(type: String, title: String, isEditing: Bool = false) {
+    init(type: String, title: String, isEditing: Bool = false, id: UUID = UUID()) {
         self.type = type
         self.title = title
         self.isEditing = isEditing
+        self.id = id
     }
 }
 
@@ -71,13 +73,20 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     /// Extend rendering bounds for code-block backgrounds (full container width)
     /// and block images drawn below text via paragraphSpacing.
+    private static let calloutBottomPadding: CGFloat = 15
+
     override var renderingSurfaceBounds: CGRect {
         var bounds = super.renderingSurfaceBounds
         if hasCodeBlockBackground || hasThematicBreak || hasBlockquote {
             let containerWidth = textLayoutManager?.textContainer?.size.width ?? bounds.width
-            // Extend left to container edge
             bounds.origin.x = -layoutFragmentFrame.origin.x
-            bounds.size.width = containerWidth
+            bounds.size.width = containerWidth + layoutFragmentFrame.origin.x
+        }
+        // Extend vertical bounds for callout bottom padding on the last fragment.
+        if hasCalloutInFragment,
+           let ts = textStorage, let range = fragmentNSRange,
+           isLastCalloutFragment(in: range, textStorage: ts) {
+            bounds.size.height += Self.calloutBottomPadding
         }
         // Extend bounds to cover block images that render below the text line
         // (visibleSource mode uses paragraphSpacing to create space for the image).
@@ -85,6 +94,11 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             bounds = bounds.union(rect)
         }
         return bounds
+    }
+
+    private var hasCalloutInFragment: Bool {
+        guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return false }
+        return hasCallout(in: range, textStorage: ts)
     }
 
     // MARK: - Drawing
@@ -560,22 +574,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         }
         guard let firstY = firstY, var lastMaxY = lastMaxY else { return }
 
-        // Add bottom padding equal to the natural top padding inside a fixed-
-        // height line, so the box looks vertically centered around the text.
-        // Enforce a minimum so the padding is always visible.
-        let textView = textLayoutManager?.textContainer?.textView
-        let baseFont = (textView as? NativeTextView)?.baseFont
-            ?? (textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
-        let lineHeight = textLineFragments.first?.typographicBounds.height ?? 0
-        let fontHeight = baseFont.ascender - baseFont.descender
-        let bottomPadding = max(4, lineHeight - fontHeight)
-
         // Background fill. Middle fragments are plain rectangles; only the first
         // fragment rounds its top corners and the last fragment rounds its bottom
         // corners, so adjacent fragments merge into one continuous rounded box.
         let isFirst = isFirstCalloutFragment(in: range, textStorage: ts)
         let isLast = isLastCalloutFragment(in: range, textStorage: ts)
-        if isLast { lastMaxY += bottomPadding }
+        if isLast { lastMaxY += Self.calloutBottomPadding }
         let bgRect = CGRect(x: leftEdge, y: firstY, width: containerWidth, height: lastMaxY - firstY)
         let bgPath = Self.roundedRectPath(
             rect: bgRect,
@@ -619,18 +623,16 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
         let tb = firstLine.typographicBounds
         let lineY = point.y + tb.origin.y
-        let lineHeight = tb.height
 
         let textView = textLayoutManager?.textContainer?.textView
         let baseFont = (textView as? NativeTextView)?.baseFont
             ?? (textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
         let titleFont = NSFontManager.shared.convert(baseFont, toHaveTrait: .boldFontMask)
 
-        // Match TextKit's bottom-alignment within a fixed line height. The raw
-        // Markdown text in edit mode sits on the baseline at
-        // `lineHeight + baseFont.descender`; drawing the rendered title from
-        // that same baseline keeps the two modes pixel-aligned.
-        let baselineY = lineY + lineHeight + baseFont.descender
+        let titleTopPadding: CGFloat = 15
+        let titleRightPadding: CGFloat = Self.blockquoteIndentPerLevel * 0.5
+
+        let titleTopY = lineY + titleTopPadding
 
         // Fixed icon dimensions: height matches the full text height
         // (ascender − descender) so the icon reads as part of the line.
@@ -638,9 +640,8 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let iconHeight = ceil(baseFont.ascender - baseFont.descender)
         let iconWidth = iconHeight + 4
         let iconX = leftEdge + indent + Self.blockquoteIndentPerLevel * 0.5
-        // Center the icon vertically on the title's cap height so it stays
-        // aligned with the text.
-        let iconCenterY = baselineY - titleFont.capHeight / 2
+        // Center the icon vertically on the first line of text at the baseline.
+        let iconCenterY = titleTopY + titleFont.ascender - titleFont.capHeight / 2
         let iconY = iconCenterY - iconHeight / 2
 
         if let baseSymbol = NSImage(systemSymbolName: style.icon, accessibilityDescription: nil) {
@@ -658,35 +659,51 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
         let title = ca.title
         let theme = (textView as? NativeTextView)?.configuration.theme ?? .default
+        let titlePara = NSMutableParagraphStyle()
+        titlePara.lineSpacing = 3
         let titleAttrs: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: theme.bodyText,
+            .paragraphStyle: titlePara,
         ]
         let titleX = iconX + iconWidth + 6
-        // `draw(at:)` in a flipped context uses the top edge of the text box.
-        let titleY = baselineY - titleFont.ascender
-        (title as NSString).draw(at: CGPoint(x: titleX, y: titleY), withAttributes: titleAttrs)
+        let titleY = titleTopY
+
+        let containerWidth = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
+        let availableWidth = max(0, leftEdge + containerWidth - titleX - titleRightPadding)
+        let titleRect = NSRect(x: titleX, y: titleY, width: max(0, availableWidth), height: .greatestFiniteMagnitude)
+        (title as NSString).draw(with: titleRect, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: titleAttrs)
     }
 
     private func isFirstCalloutFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {
+        let currentCallout = calloutAttribute(in: range, textStorage: textStorage)
         guard let tlm = textLayoutManager,
               let tcm = tlm.textContentManager as? NSTextContentStorage else { return true }
         guard let prevLocation = tcm.location(rangeInElement.location, offsetBy: -1),
               let prevFragment = tlm.textLayoutFragment(for: prevLocation),
               let prevRange = Self.nsRange(for: prevFragment, in: tcm) else { return true }
-        return !hasCallout(in: prevRange, textStorage: textStorage)
+        guard let prevCallout = calloutAttribute(in: prevRange, textStorage: textStorage) else { return true }
+        return prevCallout.id != currentCallout?.id
     }
 
     private func isLastCalloutFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {
-        // Check the text storage directly: if the character right after this
-        // fragment's range does NOT carry .callout, this is the last
-        // fragment of the callout block.  This avoids edge cases in the
-        // NSTextLayoutManager fragment graph (e.g. synthetic trailing lines)
-        // that can cause isLast to be incorrect for some callout types.
-        let nextIndex = NSMaxRange(range)
+        let currentCallout = calloutAttribute(in: range, textStorage: textStorage)
+        var nextIndex = NSMaxRange(range)
+        let nsText = textStorage.string as NSString
+        while nextIndex < textStorage.length {
+            let ch = nsText.character(at: nextIndex)
+            if ch == 0x0A || ch == 0x0D {
+                nextIndex += 1
+                continue
+            }
+            break
+        }
         guard nextIndex < textStorage.length else { return true }
-        let nextCallout = textStorage.attribute(.callout, at: nextIndex, effectiveRange: nil) as? CalloutAttribute
-        return nextCallout == nil
+        guard let nextCallout = textStorage.attribute(.callout, at: nextIndex, effectiveRange: nil) as? CalloutAttribute
+        else { return true }
+        // Adjacent callout blocks have distinct UUIDs; same id → continuation
+        // of the same callout, different id → this is the last fragment of its own.
+        return nextCallout.id != currentCallout?.id
     }
 
     private func isLastBlockquoteFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {

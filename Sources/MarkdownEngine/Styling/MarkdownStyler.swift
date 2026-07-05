@@ -51,7 +51,8 @@ enum MarkdownStyler {
         wikiLinkIDProvider: @escaping (NSRange) -> String? = { _ in nil },
         precomputedTokens: [MarkdownToken]? = nil,
         scopedRanges: [NSRange]? = nil,
-        configuration: MarkdownEditorConfiguration = .default
+        configuration: MarkdownEditorConfiguration = .default,
+        contentWidth: CGFloat = 720
     ) -> [StyledRange] {
         let tokens = precomputedTokens ?? MarkdownTokenizer.parseTokensViaAST(in: text)
         let nsText = text as NSString
@@ -83,7 +84,8 @@ enum MarkdownStyler {
         result += MarkdownASTStyler.styleAttributes(
             text: text, fontName: fontName, fontSize: fontSize,
             caretLocation: caretLocation, wikiLinkIDProvider: wikiLinkIDProvider,
-            scopedRanges: scopedRanges, configuration: configuration
+            scopedRanges: scopedRanges, configuration: configuration,
+            contentWidth: contentWidth
         )
         // NSImage rendering reuses the existing, proven machinery.
         result += styleBlockLatex(ctx)

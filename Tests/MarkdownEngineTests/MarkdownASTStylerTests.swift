@@ -203,7 +203,7 @@ struct MarkdownASTStylerTests {
         #expect(isHiddenMarkerFont(in: attrs, at: markerRange.location))
 
         let bodyRange = ns.range(of: "body line")
-        #expect(color(in: attrs, at: bodyRange.location) == MarkdownEditorTheme.default.mutedText)
+        #expect(color(in: attrs, at: bodyRange.location) == MarkdownEditorTheme.default.bodyText)
     }
 
     @Test("Multi-line callout tags every line including escaped body lines")
@@ -272,9 +272,9 @@ struct MarkdownASTStylerTests {
         let gtRange = ns.range(of: "> ")
         #expect(color(in: attrs, at: gtRange.location) == MarkdownEditorTheme.default.mutedText)
 
-        // Body line is muted like a normal blockquote.
+        // Body line uses semibold with bodyText color in callout blocks.
         let bodyRange = ns.range(of: "body line")
-        #expect(color(in: attrs, at: bodyRange.location) == MarkdownEditorTheme.default.mutedText)
+        #expect(color(in: attrs, at: bodyRange.location) == MarkdownEditorTheme.default.bodyText)
     }
 }
 

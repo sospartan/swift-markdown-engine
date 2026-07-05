@@ -70,6 +70,13 @@ struct TextStylingService {
             return
         }
 
+        let rawWidth = textView.textContainer?.size.width
+        let containerWidth: CGFloat = {
+            if let w = rawWidth, w > 0, w.isFinite, w < 10000 { return w }
+            guard textView.bounds.width > 0 else { return 720 }
+            return textView.bounds.width - textView.textContainerInset.width * 2
+        }()
+
         let styledRanges = MarkdownStyler.styleAttributes(
             text: textView.string,
             fontName: baseFont.fontName,
@@ -80,7 +87,8 @@ struct TextStylingService {
             wikiLinkIDProvider: wikiLinkIDProvider,
             precomputedTokens: precomputedTokens,
             scopedRanges: paragraphs,
-            configuration: configuration
+            configuration: configuration,
+            contentWidth: containerWidth
         )
 
         // Block-level attributes like `.callout` can span multiple paragraphs.
@@ -125,7 +133,7 @@ struct TextStylingService {
         (textView as? NativeTextView)?.ensureVisibleLayout()
     }
 
-    private static func normalize(_ candidates: [NSRange]) -> [NSRange] {
+    static func normalize(_ candidates: [NSRange]) -> [NSRange] {
         var result: [NSRange] = []
         for candidate in candidates where candidate.location != NSNotFound && candidate.length > 0 {
             if result.contains(where: { $0.location == candidate.location && $0.length == candidate.length }) {

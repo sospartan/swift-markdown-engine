@@ -29,7 +29,8 @@ enum MarkdownASTStyler {
         caretLocation: Int = -1,
         wikiLinkIDProvider: @escaping (NSRange) -> String? = { _ in nil },
         scopedRanges: [NSRange]? = nil,
-        configuration: MarkdownEditorConfiguration = .default
+        configuration: MarkdownEditorConfiguration = .default,
+        contentWidth: CGFloat = 720
     ) -> [StyledRange] {
         let baseFont = NSFont(name: fontName, size: fontSize) ?? .systemFont(ofSize: fontSize)
         let baseLineHeight = ceil(baseFont.ascender - baseFont.descender + baseFont.leading)
@@ -62,7 +63,8 @@ enum MarkdownASTStyler {
             caret: caretLocation,
             config: configuration,
             wikiLinkID: wikiLinkIDProvider,
-            scopedRanges: scopedRanges
+            scopedRanges: scopedRanges,
+            contentWidth: contentWidth
         )
         let blocks = DocumentAST.parse(text, scopedRanges: scopedRanges)
         var attrs: [StyledRange] = []
@@ -285,6 +287,7 @@ enum MarkdownASTStyler {
         let config: MarkdownEditorConfiguration
         let wikiLinkID: (NSRange) -> String?
         let scopedRanges: [NSRange]?
+        let contentWidth: CGFloat
 
         /// Active (syntax revealed) when the caret is inside the range or at its end (minus a newline).
         func isActive(_ range: NSRange) -> Bool {
@@ -359,6 +362,9 @@ enum MarkdownASTStyler {
         let indentPerLevel = MarkdownTextLayoutFragment.blockquoteIndentPerLevel
         let active = ctx.isActive(range)
         let callout = detectCallout(in: range, ctx: ctx, into: &attrs)
+        // One CalloutAttribute instance per block (shared UUID) so the renderer
+        // can distinguish adjacent callout blocks via `id`.
+        let calloutAttr = callout.map { CalloutAttribute(type: $0.type, title: $0.title, isEditing: active) }
 
         var lineStart = range.location
         let end = NSMaxRange(range)
@@ -396,17 +402,35 @@ enum MarkdownASTStyler {
             para.firstLineHeadIndent = textIndent
             para.headIndent = textIndent
             let calloutExtraHeight: CGFloat = (callout != nil) ? 2 : 0
-            let lineHeight = ctx.baseLineHeight + ctx.config.blockquote.extraLineHeight + calloutExtraHeight
-            para.minimumLineHeight = lineHeight
-            para.maximumLineHeight = lineHeight
-            // Inner quote lines stay tight (0); the LAST line gets the normal
-            para.paragraphSpacing = (lineEnd >= end) ? ctx.baseParagraphSpacing : 0
+            var lineHeight = ctx.baseLineHeight + ctx.config.blockquote.extraLineHeight + calloutExtraHeight
+            if !active, let callout, isFirstLine {
+                let titleFont = NSFontManager.shared.convert(ctx.baseFont, toHaveTrait: .boldFontMask)
+                let neededHeight = Self.estimatedTitleHeight(
+                    title: callout.title,
+                    font: titleFont,
+                    level: level,
+                    indentPerLevel: indentPerLevel,
+                    baseLineHeight: ctx.baseLineHeight,
+                    contentWidth: ctx.contentWidth
+                )
+                lineHeight = max(lineHeight, neededHeight)
+                para.minimumLineHeight = lineHeight
+            } else {
+                para.minimumLineHeight = lineHeight
+                para.maximumLineHeight = lineHeight
+            }
+            // Inner quote lines stay tight (0); the LAST line gets the normal,
+            // bumped up for callouts so the bottom background padding doesn't overlap
+            // with the next line's cursor area.
+            para.paragraphSpacing = (lineEnd >= end)
+                ? max(ctx.baseParagraphSpacing, calloutAttr != nil ? Self.bottomPadding : 0)
+                : 0
             para.paragraphSpacingBefore = 0
             attrs.append((ctx.ns.paragraphRange(for: tokenRange), [.paragraphStyle: para]))
 
             // Content styling: callouts get special treatment; plain blockquotes get muted text.
             styleCalloutContent(
-                callout: callout, active: active, isFirstLine: isFirstLine,
+                calloutAttr: calloutAttr, active: active, isFirstLine: isFirstLine,
                 tokenRange: tokenRange, contentRange: contentRange, markerRange: markerRange,
                 ctx: ctx, into: &attrs
             )
@@ -477,13 +501,18 @@ enum MarkdownASTStyler {
 
     /// Assign callout-specific attributes to a blockquote line's content and marker.
     private static func styleCalloutContent(
-        callout: CalloutInfo?, active: Bool, isFirstLine: Bool,
+        calloutAttr: CalloutAttribute?, active: Bool, isFirstLine: Bool,
         tokenRange: NSRange, contentRange: NSRange, markerRange: NSRange,
         ctx: Ctx, into attrs: inout [StyledRange]
     ) {
-        if let callout {
-            let ca = CalloutAttribute(type: callout.type, title: callout.title, isEditing: active)
+        if let ca = calloutAttr {
             attrs.append((tokenRange, [.callout: ca]))
+            let bodyFont: NSFont = {
+                let desc = ctx.baseFont.fontDescriptor.addingAttributes([
+                    .traits: [NSFontDescriptor.TraitKey.weight: NSFont.Weight.medium]
+                ])
+                return NSFont(descriptor: desc, size: ctx.baseFont.pointSize) ?? ctx.baseFont
+            }()
             if active {
                 if isFirstLine {
                     attrs.append((contentRange, [
@@ -491,7 +520,10 @@ enum MarkdownASTStyler {
                         .backgroundColor: NSColor.clear,
                     ]))
                 } else if contentRange.length > 0 {
-                    attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
+                    attrs.append((contentRange, [
+                        .font: bodyFont,
+                        .foregroundColor: ctx.theme.bodyText,
+                    ]))
                 }
             } else {
                 if isFirstLine {
@@ -501,7 +533,10 @@ enum MarkdownASTStyler {
                         .font: ctx.inlineMarkerFont,
                     ]))
                 } else if contentRange.length > 0 {
-                    attrs.append((contentRange, [.foregroundColor: ctx.theme.mutedText]))
+                    attrs.append((contentRange, [
+                        .font: bodyFont,
+                        .foregroundColor: ctx.theme.bodyText,
+                    ]))
                 }
             }
         } else if contentRange.length > 0 {
@@ -509,13 +544,48 @@ enum MarkdownASTStyler {
         }
 
         // `>` marker visibility.
-        if active && callout != nil {
+        if active && calloutAttr != nil {
             attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
         } else if ctx.isActive(tokenRange) {
             attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
         } else {
             attrs.append((markerRange, [.foregroundColor: NSColor.clear, .font: ctx.inlineMarkerFont]))
         }
+    }
+
+    private static let titleTopPadding: CGFloat = 15
+    private static let titleBottomPadding: CGFloat = 8
+    private static let titleLineSpacing: CGFloat = 3
+    private static let bottomPadding: CGFloat = 15
+
+    private static func estimatedTitleHeight(
+        title: String,
+        font: NSFont,
+        level: Int,
+        indentPerLevel: CGFloat,
+        baseLineHeight: CGFloat,
+        contentWidth: CGFloat
+    ) -> CGFloat {
+        guard !title.isEmpty else { return baseLineHeight }
+
+        let indent = CGFloat(level) * indentPerLevel + indentPerLevel * 0.5
+        let iconWidth = ceil(font.ascender - font.descender) + 4
+        let titleInset = indent + iconWidth + 6
+        let rightPadding = indentPerLevel * 0.5
+        let availableWidth = max(1, contentWidth - titleInset - rightPadding)
+
+        let titlePara = NSMutableParagraphStyle()
+        titlePara.lineSpacing = titleLineSpacing
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: titlePara]
+        let size = CGSize(width: availableWidth, height: .greatestFiniteMagnitude)
+        let boundingRect = (title as NSString).boundingRect(
+            with: size,
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attrs
+        )
+
+        let result = max(baseLineHeight, ceil(boundingRect.height) + titleTopPadding + titleBottomPadding)
+        return result
     }
 
     private static func styleCodeBlock(range: NSRange, ctx: Ctx, into attrs: inout [StyledRange]) {
