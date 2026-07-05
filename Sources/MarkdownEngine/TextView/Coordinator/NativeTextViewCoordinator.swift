@@ -51,6 +51,8 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var lastImageFingerprint: AnyHashable?
     var lastWikiFingerprint: AnyHashable?
     private var busObservers: [NSObjectProtocol] = []
+    /// Closure called when the document's ATX headings change.
+    var onHeadingsDidChange: (([DocumentHeading]) -> Void)?
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
     /// Owns the scroll-away header (build, content refresh, collapse/expand,
@@ -96,6 +98,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var cachedCodeBlockTokens: [(index: Int, token: MarkdownToken)] = []
     var cachedParsedText: String?
     var cachedParsedDocument: ParsedDocument?
+    var lastPostedHeadings: [DocumentHeading]?
     // Skip spellcheck property setters when the state wouldn't change.
     var cachedSpellingDisabled: Bool?
 
@@ -299,6 +302,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
 
     // Find-in-document highlight handlers live in
     // `NativeTextViewCoordinator+Find.swift`.
+    // Table-of-contents integration lives in `NativeTextViewCoordinator+Headings.swift`.
 
     func wikiLinkID(for range: NSRange) -> String? {
         wikiLinkMetadata[WikiLinkService.RangeKey(range)]?.id

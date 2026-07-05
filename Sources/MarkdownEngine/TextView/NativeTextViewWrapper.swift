@@ -127,6 +127,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// Called on mouse-move with the event location in window coordinates.
     /// Return `true` to show the arrow cursor instead of the I-beam.
     public var isCursorExcluded: ((CGPoint) -> Bool)?
+    /// Called with the current ATX headings whenever the document's heading
+    /// structure changes, so embedders can populate a TOC outline.
+    public var onHeadingsDidChange: (([DocumentHeading]) -> Void)?
+    /// Object through which the embedder requests scroll-to-range.
+    /// The engine fills in the handler during `makeNSView`.
+    public var scrollHandler: ScrollHandler
 
     public init(
         text: Binding<String>,
@@ -145,6 +151,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         onInlinePreviewKey: ((InlinePreviewKey) -> Bool)? = nil,
         onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)? = nil,
         onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)? = nil,
+        onHeadingsDidChange: (([DocumentHeading]) -> Void)? = nil,
+        scrollHandler: ScrollHandler = ScrollHandler(),
         placeholder: NSAttributedString? = nil,
         header: AnyView? = nil,
         headerCollapsedHeight: CGFloat = 0,
@@ -168,6 +176,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.onInlinePreviewKey = onInlinePreviewKey
         self.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         self.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
+        self.onHeadingsDidChange = onHeadingsDidChange
+        self.scrollHandler = scrollHandler
         self.placeholder = placeholder
         self.header = header
         self.headerCollapsedHeight = headerCollapsedHeight
@@ -367,6 +377,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.updateCodeBlockSelection(textView: textView)
         }
         reconcileHeader(textView: textView, context: context)
+        context.coordinator.postHeadingsDidChange(for: textView.string)
+        let ctx = context
+        scrollHandler.scroll = { [weak tv = textView] (range: NSRange) in
+            guard let tv else { return }
+            ctx.coordinator.scrollRangeIntoView(range, in: tv)
+        }
         return scrollView
     }
 
@@ -590,7 +606,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        context.coordinator.onHeadingsDidChange = onHeadingsDidChange
         context.coordinator.didInitialFormatting = true
+        context.coordinator.postHeadingsDidChange(for: textView.string)
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -612,6 +630,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         coordinator.userPrefersGrammarChecking = configuration.spellChecking.grammarChecking
         coordinator.userPrefersAutomaticSpellingCorrection = configuration.spellChecking.automaticSpellingCorrection
         coordinator.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
+        coordinator.onHeadingsDidChange = onHeadingsDidChange
         return coordinator
     }
 }

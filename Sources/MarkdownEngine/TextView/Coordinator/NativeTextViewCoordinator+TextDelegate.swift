@@ -87,6 +87,7 @@ extension NativeTextViewCoordinator {
                 bottomTextView.recalcOverscroll(for: scrollView, debugTag: "textDidChange")
                 (scrollView as? ClampedScrollView)?.clampToInsets()
             }
+            postHeadingsDidChange(for: tv.string)
             return
         }
         let wtActive = isWritingToolsActive
@@ -207,6 +208,7 @@ extension NativeTextViewCoordinator {
         updateCodeBlockSelection(textView: tv, tokens: tokens)
         if wtActive {
             previousActiveTokenIndices = activeTokenIndices
+            postHeadingsDidChange(for: tv.string)
             return
         }
         if let bottomTextView = tv as? NativeTextView,
@@ -215,6 +217,7 @@ extension NativeTextViewCoordinator {
             (scrollView as? ClampedScrollView)?.clampToInsets()
         }
         previousActiveTokenIndices = activeTokenIndices
+        postHeadingsDidChange(for: tv.string)
     }
 
     public func textViewDidChangeSelection(_ notification: Notification) {

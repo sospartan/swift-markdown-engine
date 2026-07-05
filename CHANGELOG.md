@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Table-of-contents integration for embedder outline panels:
+  - `DocumentHeading` — public heading entry (`level`, `title`, source-coordinate `range`).
+  - `HeadingExtractor` — walks the engine AST to collect ATX headings (skips headings
+    inside fenced code blocks; title text strips inline markup).
+  - `NativeTextViewWrapper.onHeadingsDidChange` — closure called with the current
+    `[DocumentHeading]` list whenever heading structure changes.
+  - `NativeTextViewWrapper.scrollHandler` — per-editor `ScrollHandler` object
+    through which the embedder requests scroll-to-range; the engine fills in the
+    handler during `makeNSView` for direct coordinator invocation.
+  - `scrollRangeIntoView(_:in:)` — shared reading-column scroll helper (also used by
+    find-match reveal).
 - `MarkdownEditorConfiguration.rawSourceMode`: present the document as raw
   Markdown source — no syntax hiding, no markdown styling, and no wiki-link
   display transform (`[[Name|UUID]]` shows verbatim). The editor keeps base
