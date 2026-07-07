@@ -2,7 +2,7 @@
 //  CalloutRenderTests.swift
 //  MarkdownEngineTests
 //
-//  Temporary visual regression test for callout rendering.
+//  Tests for callout attribute emission.
 //
 
 import AppKit
@@ -16,48 +16,58 @@ struct CalloutRenderTests {
     private let base: CGFloat = 14
     private var fontName: String { NSFont.systemFont(ofSize: 14).fontName }
 
+    private static let calloutConfig = CalloutConfiguration(types: [
+        "info": CalloutConfiguration.CalloutStyle(color: .systemBlue, icon: "info.circle"),
+        "note": CalloutConfiguration.CalloutStyle(color: .systemBlue, icon: "note.text"),
+        "warning": CalloutConfiguration.CalloutStyle(color: .systemOrange, icon: "exclamationmark.triangle"),
+    ])
+
     @MainActor
-    @Test("Callout title is visibly rendered in render mode")
-    func calloutTitleIsVisible() throws {
+    @Test("Callout attribute is emitted for > [!info] blocks")
+    func calloutAttributeEmitted() throws {
         _ = NSApplication.shared
         let text = "> [!info] Important note\n> First body line\n> Another line"
 
-        let textView = NativeTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
-        let baseFont = NSFont.systemFont(ofSize: base)
-        textView.baseFont = baseFont
-        textView.font = baseFont
-        textView.string = text
-        let layoutDelegate = MarkdownLayoutManagerDelegate()
-        textView.textLayoutManager?.delegate = layoutDelegate
+        var config = MarkdownEditorConfiguration.default
+        config.callout = Self.calloutConfig
+        BlockParser.calloutTypes = config.callout.activeTypes
+        defer { BlockParser.calloutTypes = nil }
 
         let attrs = MarkdownASTStyler.styleAttributes(
             text: text,
             fontName: fontName,
             fontSize: base,
-            caretLocation: -1
+            caretLocation: -1,
+            configuration: config
         )
-        textView.textStorage?.beginEditing()
-        for (range, a) in attrs {
-            textView.textStorage?.addAttributes(a, range: range)
-        }
-        textView.textStorage?.endEditing()
 
-        textView.layout()
-        textView.display()
+        let calloutRanges = attrs.filter { $0.attributes[.callout] is CalloutAttribute }
+        #expect(!calloutRanges.isEmpty, "expected callout attribute to be emitted for > [!info] block")
 
-        guard let bitmap = textView.bitmapImageRepForCachingDisplay(in: textView.bounds) else {
-            Issue.record("failed to create bitmap rep")
-            return
-        }
-        textView.cacheDisplay(in: textView.bounds, to: bitmap)
+        let calloutAttr = calloutRanges.first?.attributes[.callout] as? CalloutAttribute
+        #expect(calloutAttr?.type == "info", "expected type 'info', got '\(calloutAttr?.type ?? "nil")'")
+        #expect(calloutAttr?.title == "Important note", "expected title 'Important note', got '\(calloutAttr?.title ?? "nil")'")
+    }
 
-        // Sample a point on the rendered title line where the title text
-        // (not the blue background) should appear.
-        let sampleX = 80
-        let sampleY = 5
-        let color = bitmap.colorAt(x: sampleX, y: sampleY)
-        let background = MarkdownTextLayoutFragment.calloutStyle(for: "info").color.withAlphaComponent(0.1)
-        #expect(color != background, "expected visible title pixel, got background color")
-        #expect(color?.alphaComponent != 0, "expected non-transparent title pixel")
+    @MainActor
+    @Test("Block without callout config stays as blockquote")
+    func noCalloutConfigFallsBackToBlockquote() throws {
+        _ = NSApplication.shared
+        let text = "> [!info] No config"
+
+        var config = MarkdownEditorConfiguration.default
+        config.callout = .none
+        BlockParser.calloutTypes = nil
+
+        let attrs = MarkdownASTStyler.styleAttributes(
+            text: text,
+            fontName: fontName,
+            fontSize: base,
+            caretLocation: -1,
+            configuration: config
+        )
+
+        let calloutRanges = attrs.filter { $0.attributes[.callout] is CalloutAttribute }
+        #expect(calloutRanges.isEmpty, "expected no callout attribute when config is empty")
     }
 }

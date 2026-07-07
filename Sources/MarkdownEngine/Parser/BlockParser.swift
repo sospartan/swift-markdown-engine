@@ -33,6 +33,7 @@ enum BlockKind: Equatable {
     case table           // GFM table — opaque (rendered as a unit)
     case thematicBreak   // `---` / `***` / `___` — produces no token today
     case blank           // blank / whitespace-only line(s) — separator
+    case callout(type: String, title: String?)  // `> [!TYPE] title` — inline-bearing, like blockquote
 }
 
 /// One block; `range` is the absolute UTF-16 span of its lines, tiling with no gaps.
@@ -46,6 +47,12 @@ enum BlockParser {
     private static let cacheLock = NSLock()
     private static var cachedChars: [unichar]?     // UTF-16 buffer of the last parse
     private static var cachedBlocks: [Block]?
+    private static var cachedCalloutHash: Int = 0  // fingerprint of calloutTypes used for cached blocks
+
+    /// When non-nil and non-empty, `> [!TYPE]` lines whose TYPE is in this set
+    /// are classified as `.callout` instead of `.blockquote`. Set once by the
+    /// embedder before any text is parsed.
+    static var calloutTypes: Set<String>?
 
     /// Splits `text` into gap-free tiling blocks; memoizes the last parse so both per-keystroke callers share one line-scan.
     static func parse(_ text: String) -> [Block] {
@@ -54,25 +61,28 @@ enum BlockParser {
         var newChars = [unichar](repeating: 0, count: newLen)
         if newLen > 0 { textNS.getCharacters(&newChars, range: NSRange(location: 0, length: newLen)) }
 
+        let calloutHash = Self.calloutTypes?.hashValue ?? 0
+
         cacheLock.lock()
         let prevChars = cachedChars
         let prevBlocks = cachedBlocks
+        let prevCalloutHash = cachedCalloutHash
         cacheLock.unlock()
 
-        // Identical text → return cached (memcmp the buffer, not a slow bridged `String ==`).
-        if let prevChars, let prevBlocks, equalBuffers(prevChars, newChars) {
+        // Identical text + identical callout config → return cached.
+        if let prevChars, let prevBlocks, equalBuffers(prevChars, newChars), prevCalloutHash == calloutHash {
             return prevBlocks
         }
 
         // Incremental: reparse only the affected block window, else fall back to a full reparse.
         if let prevChars, let prevBlocks,
-           let (incr, _) = incrementalParse(oldChars: prevChars, oldBlocks: prevBlocks, newChars: newChars, newNS: textNS) {
-            cacheLock.lock(); cachedChars = newChars; cachedBlocks = incr; cacheLock.unlock()
+           let (incr, _) = incrementalParse(oldChars: prevChars, oldBlocks: prevBlocks, newChars: newChars, newNS: textNS, oldCalloutHash: prevCalloutHash) {
+            cacheLock.lock(); cachedChars = newChars; cachedBlocks = incr; cachedCalloutHash = calloutHash; cacheLock.unlock()
             return incr
         }
 
         let blocks = computeBlocks(text)
-        cacheLock.lock(); cachedChars = newChars; cachedBlocks = blocks; cacheLock.unlock()
+        cacheLock.lock(); cachedChars = newChars; cachedBlocks = blocks; cachedCalloutHash = calloutHash; cacheLock.unlock()
         return blocks
     }
 
@@ -100,10 +110,13 @@ enum BlockParser {
     }
 
     /// Diff old→new, reparse the affected window, splice between untouched prefix/suffix; nil to fall back to full.
-    private static func incrementalParse(oldChars o: [unichar], oldBlocks: [Block], newChars n: [unichar], newNS: NSString) -> (blocks: [Block], window: Int)? {
+    private static func incrementalParse(oldChars o: [unichar], oldBlocks: [Block], newChars n: [unichar], newNS: NSString, oldCalloutHash: Int = 0) -> (blocks: [Block], window: Int)? {
         guard !oldBlocks.isEmpty else { return nil }
         let oldLen = o.count, newLen = n.count
         guard oldLen > 0, newLen > 0 else { return nil }
+
+        let calloutHash = Self.calloutTypes?.hashValue ?? 0
+        if calloutHash != oldCalloutHash { return nil }
 
         // 1. Common prefix/suffix over the cached UTF-16 buffers (no re-extract).
         var p = 0
@@ -129,10 +142,13 @@ enum BlockParser {
         let winFirst = max(0, min(firstIdx, lastIdx) - 1)
         let winLast = min(oldBlocks.count - 1, max(firstIdx, lastIdx) + 1)
 
-        // 3. Bail on opaque multi-line blocks — fences / block LaTeX can ripple.
+        // 3. Bail on opaque multi-line blocks — fences / block LaTeX / callouts can ripple.
         for b in oldBlocks[winFirst...winLast] where b.kind == .fencedCode || b.kind == .blockLatex {
             return nil
         }
+        // Callout blocks can change kind (callout ↔ blockquote) when the
+        // [!TYPE] marker is edited, so bail to full reparse for correctness.
+        for b in oldBlocks[winFirst...winLast] where matchesCallout(b) { return nil }
 
         // 4. Window → new-text range (window start is before the edit → unchanged).
         let winStart = oldBlocks[winFirst].range.location
@@ -143,7 +159,7 @@ enum BlockParser {
         let windowText = newNS.substring(with: NSRange(location: winStart, length: winEndNew - winStart))
         let reparsed = computeBlocks(windowText).map { $0.shifted(by: winStart) }
         // A trailing fence/latex reaching the window end might continue past it.
-        if let last = reparsed.last, last.kind == .fencedCode || last.kind == .blockLatex,
+        if let last = reparsed.last, last.kind == .fencedCode || last.kind == .blockLatex || matchesCallout(last),
            NSMaxRange(last.range) >= winEndNew {
             return nil
         }
@@ -221,6 +237,13 @@ enum BlockParser {
             } else if isHeading(line) {
                 blocks.append(Block(kind: .heading, range: lines[i]))
                 i += 1
+
+            } else if let cts = Self.calloutTypes, !cts.isEmpty, isBlockquote(line),
+                      let info = calloutInfo(line, calloutTypes: cts) {
+                var end = i
+                while end + 1 < lines.count, isBlockquote(lineText(end + 1)) { end += 1 }
+                blocks.append(Block(kind: .callout(type: info.type, title: info.title), range: union(lines[i...end])))
+                i = end + 1
 
             } else if isBlockquote(line) {
                 var end = i
@@ -342,6 +365,42 @@ enum BlockParser {
     /// A block-LaTeX opener: a line whose content starts with `$$`.
     private static func isBlockLatexOpen(_ line: String) -> Bool {
         line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("$$")
+    }
+
+    /// Extract (type, title) from a callout line `> [!TYPE] Title`, or nil.
+    /// Only called when `isBlockquote(line)` already passed, so we know the
+    /// line starts with `>` after optional indent.
+    private static func calloutInfo(_ line: String, calloutTypes: Set<String>) -> (type: String, title: String)? {
+        var rest = Substring(line).drop { $0 == " " || $0 == "\t" }
+        var indent = 0
+        while indent < 3, let c = rest.first, c == " " || c == "\t" { rest = rest.dropFirst(); indent += 1 }
+        guard rest.first == ">" else { return nil }
+        rest = rest.dropFirst()
+        while let c = rest.first, c == " " || c == "\t" { rest = rest.dropFirst() }
+        guard let first = rest.first, first == "[" else { return nil }
+        guard rest.count >= 4 else { return nil }
+        let afterBracket = rest.dropFirst()
+        guard afterBracket.first == "!" else { return nil }
+        let rest2 = afterBracket.dropFirst()
+        var typeChars = ""
+        var idx = rest2.startIndex
+        while idx < rest2.endIndex, rest2[idx].isLetter { typeChars.append(rest2[idx]); idx = rest2.index(after: idx) }
+        guard !typeChars.isEmpty, calloutTypes.contains(typeChars.lowercased()) else {
+            return nil
+        }
+        guard idx < rest2.endIndex, rest2[idx] == "]" else { return nil }
+        idx = rest2.index(after: idx)
+        if idx < rest2.endIndex, rest2[idx] == " " || rest2[idx] == "\t" { idx = rest2.index(after: idx) }
+        let tail = rest2[idx...]
+        let trimmed = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = trimmed.isEmpty ? typeChars.capitalized : trimmed
+        return (typeChars.lowercased(), title)
+    }
+
+    /// Whether the block kind is a callout (used in incremental-parse bail checks).
+    private static func matchesCallout(_ block: Block) -> Bool {
+        if case .callout = block.kind { return true }
+        return false
     }
 
     private static func union(_ ranges: ArraySlice<NSRange>) -> NSRange {

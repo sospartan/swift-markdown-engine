@@ -42,12 +42,16 @@ extension NSAttributedString.Key {
 final class CalloutAttribute {
     let type: String
     let title: String
+    let color: NSColor
+    let icon: String
     var isEditing: Bool
     let id: UUID
 
-    init(type: String, title: String, isEditing: Bool = false, id: UUID = UUID()) {
+    init(type: String, title: String, color: NSColor, icon: String, isEditing: Bool = false, id: UUID = UUID()) {
         self.type = type
         self.title = title
+        self.color = color
+        self.icon = icon
         self.isEditing = isEditing
         self.id = id
     }
@@ -557,7 +561,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        let style = Self.calloutStyle(for: ca.type)
+        let calloutColor = ca.color
         let containerWidth = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
         let leftEdge = point.x - layoutFragmentFrame.origin.x
         let level = calloutLevel(in: range, textStorage: ts) ?? 1
@@ -588,13 +592,13 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             bottomLeft: isLast ? 6 : 0,
             bottomRight: isLast ? 6 : 0
         )
-        style.color.withAlphaComponent(0.1).setFill()
+        calloutColor.withAlphaComponent(0.1).setFill()
         bgPath.fill()
 
         // Left accent bar, aligned with the innermost blockquote bar for this level.
         let barX = leftEdge + CGFloat(level - 1) * Self.blockquoteIndentPerLevel + Self.blockquoteIndentPerLevel * 0.25
         let barRect = CGRect(x: barX, y: firstY, width: Self.blockquoteBarWidth, height: lastMaxY - firstY)
-        style.color.setFill()
+        calloutColor.setFill()
         NSBezierPath(rect: barRect).fill()
     }
 
@@ -604,10 +608,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
         guard let ca = calloutAttribute(in: range, textStorage: ts) else { return }
 
-        // In edit mode the raw Markdown is visible, so skip the rendered icon/title.
+        // In edit mode the raw Markdown is visible, so skip the rendered icon.
         guard !ca.isEditing else { return }
 
-        // Icon + title only on the first fragment of the callout block.
+        // Icon only on the first fragment of the callout block.
         guard isFirstCalloutFragment(in: range, textStorage: ts),
               let firstLine = textLineFragments.first else { return }
 
@@ -616,7 +620,8 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        let style = Self.calloutStyle(for: ca.type)
+        let calloutColor = ca.color
+        let calloutIcon = ca.icon
         let leftEdge = point.x - layoutFragmentFrame.origin.x
         let level = calloutLevel(in: range, textStorage: ts) ?? 1
         let indent = CGFloat(level) * Self.blockquoteIndentPerLevel
@@ -627,27 +632,17 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let textView = textLayoutManager?.textContainer?.textView
         let baseFont = (textView as? NativeTextView)?.baseFont
             ?? (textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
-        let titleFont = NSFontManager.shared.convert(baseFont, toHaveTrait: .boldFontMask)
 
-        let titleTopPadding: CGFloat = 15
-        let titleRightPadding: CGFloat = Self.blockquoteIndentPerLevel * 0.5
-
-        let titleTopY = lineY + titleTopPadding
-
-        // Fixed icon dimensions: height matches the full text height
-        // (ascender − descender) so the icon reads as part of the line.
-        // Width is slightly larger (4pt) for visual balance with SF Symbols.
         let iconHeight = ceil(baseFont.ascender - baseFont.descender)
         let iconWidth = iconHeight + 4
         let iconX = leftEdge + indent + Self.blockquoteIndentPerLevel * 0.5
-        // Center the icon vertically on the first line of text at the baseline.
-        let iconCenterY = titleTopY + titleFont.ascender - titleFont.capHeight / 2
+        let firstCharPos = firstLine.locationForCharacter(at: firstLine.characterRange.location)
+        let baselineY = lineY + firstCharPos.y
+        let iconCenterY = baselineY - baseFont.capHeight / 2
         let iconY = iconCenterY - iconHeight / 2
 
-        if let baseSymbol = NSImage(systemSymbolName: style.icon, accessibilityDescription: nil) {
-            let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: style.color)
-            // Use a fixed reference pointSize so we can derive the symbol's
-            // natural aspect ratio, then scale proportionally to iconHeight.
+        if let baseSymbol = NSImage(systemSymbolName: calloutIcon, accessibilityDescription: nil) {
+            let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: calloutColor)
             let refConfig = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
             let refSymbol = baseSymbol.withSymbolConfiguration(refConfig.applying(colorConfig)) ?? baseSymbol
             let refSize = refSymbol.size
@@ -656,23 +651,6 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             let drawX = iconX + (iconWidth - drawWidth) / 2
             refSymbol.draw(in: CGRect(x: drawX, y: iconY, width: drawWidth, height: iconHeight))
         }
-
-        let title = ca.title
-        let theme = (textView as? NativeTextView)?.configuration.theme ?? .default
-        let titlePara = NSMutableParagraphStyle()
-        titlePara.lineSpacing = 3
-        let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: titleFont,
-            .foregroundColor: theme.bodyText,
-            .paragraphStyle: titlePara,
-        ]
-        let titleX = iconX + iconWidth + 6
-        let titleY = titleTopY
-
-        let containerWidth = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
-        let availableWidth = max(0, leftEdge + containerWidth - titleX - titleRightPadding)
-        let titleRect = NSRect(x: titleX, y: titleY, width: max(0, availableWidth), height: .greatestFiniteMagnitude)
-        (title as NSString).draw(with: titleRect, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: titleAttrs)
     }
 
     private func isFirstCalloutFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {
@@ -809,35 +787,6 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         }
         path.close()
         return path
-    }
-
-    static func calloutStyle(for type: String) -> (color: NSColor, icon: String) {
-        switch type.lowercased() {
-        case "note":
-            return (NSColor(srgbRed: 8 / 255, green: 109 / 255, blue: 221 / 255, alpha: 1), "note.text")
-        case "abstract", "summary", "tldr":
-            return (NSColor(srgbRed: 0 / 255, green: 191 / 255, blue: 188 / 255, alpha: 1), "doc.text")
-        case "info", "todo":
-            return (NSColor(srgbRed: 8 / 255, green: 109 / 255, blue: 221 / 255, alpha: 1), "info.circle")
-        case "tip", "hint", "important":
-            return (NSColor(srgbRed: 0 / 255, green: 191 / 255, blue: 188 / 255, alpha: 1), "lightbulb")
-        case "success", "check", "done":
-            return (NSColor(srgbRed: 8 / 255, green: 185 / 255, blue: 78 / 255, alpha: 1), "checkmark.circle")
-        case "question", "help", "faq":
-            return (NSColor(srgbRed: 138 / 255, green: 92 / 255, blue: 245 / 255, alpha: 1), "questionmark.circle")
-        case "warning", "caution", "attention":
-            return (NSColor(srgbRed: 245 / 255, green: 127 / 255, blue: 23 / 255, alpha: 1), "exclamationmark.triangle")
-        case "failure", "fail", "missing":
-            return (NSColor(srgbRed: 211 / 255, green: 47 / 255, blue: 47 / 255, alpha: 1), "xmark.circle")
-        case "danger", "error", "bug":
-            return (NSColor(srgbRed: 211 / 255, green: 47 / 255, blue: 47 / 255, alpha: 1), "flame")
-        case "example":
-            return (NSColor(srgbRed: 120 / 255, green: 82 / 255, blue: 238 / 255, alpha: 1), "list.number")
-        case "quote", "cite":
-            return (NSColor(srgbRed: 158 / 255, green: 158 / 255, blue: 158 / 255, alpha: 1), "quote.opening")
-        default:
-            return (NSColor(srgbRed: 8 / 255, green: 109 / 255, blue: 221 / 255, alpha: 1), "info.circle")
-        }
     }
 
     // MARK: - Bullet Markers

@@ -47,6 +47,7 @@ enum BlockLevelTokenizer {
         case .fencedCode:  return codeBlock(in: sub)
         case .heading:     return heading(in: sub)
         case .blockquote:  return blockquote(in: sub)
+        case .callout:     return calloutTokens(in: sub)
         case .table:       return table(in: sub)
         case .blockLatex:  return blockLatex(in: sub)
         case .paragraph, .list, .thematicBreak, .blank:
@@ -96,6 +97,36 @@ enum BlockLevelTokenizer {
                 let markerEnd = i
                 tokens.append(MarkdownToken(
                     kind: .blockquote,
+                    range: NSRange(location: lineStart, length: contentEnd - lineStart),
+                    contentRange: NSRange(location: markerEnd, length: contentEnd - markerEnd),
+                    markerRanges: [NSRange(location: markerStart, length: markerEnd - markerStart)]))
+            }
+            if nextStart <= lineStart { break }
+            lineStart = nextStart
+        }
+        return tokens
+    }
+
+    // MARK: - Callout  (same line structure as blockquote; `> [!TYPE] Title` per line)
+
+    private static func calloutTokens(in s: NSString) -> [MarkdownToken] {
+        let len = s.length
+        var tokens: [MarkdownToken] = []
+        var lineStart = 0
+        while lineStart < len {
+            let (contentEnd, nextStart) = line(in: s, from: lineStart)
+            var i = lineStart
+            var indent = 0
+            while i < contentEnd, indent < 3, isWS(s.character(at: i)) { i += 1; indent += 1 }
+            let markerStart = i
+            if i < contentEnd, s.character(at: i) == gt {
+                while i < contentEnd, s.character(at: i) == gt {
+                    i += 1
+                    if i < contentEnd, isWS(s.character(at: i)) { i += 1 }
+                }
+                let markerEnd = i
+                tokens.append(MarkdownToken(
+                    kind: .callout,
                     range: NSRange(location: lineStart, length: contentEnd - lineStart),
                     contentRange: NSRange(location: markerEnd, length: contentEnd - markerEnd),
                     markerRanges: [NSRange(location: markerStart, length: markerEnd - markerStart)]))
