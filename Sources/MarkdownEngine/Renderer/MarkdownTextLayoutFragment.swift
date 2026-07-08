@@ -32,6 +32,29 @@ extension NSAttributedString.Key {
     static let scrollableBlockTotalHeight = NSAttributedString.Key("ScrollableBlockTotalHeight")
     /// NSValue(range:) — full multi-line range of the wide-table source, used to scope width-change restyles.
     static let scrollableBlockFullRange = NSAttributedString.Key("ScrollableBlockFullRange")
+    /// Consolidated callout metadata (type + title + editing flag).
+    static let callout = NSAttributedString.Key("Callout")
+    /// Marks the literal `[!TYPE]` marker of a callout so later regex passes
+    /// (e.g. incomplete-link highlighting) leave it alone.
+    static let calloutMarker = NSAttributedString.Key("CalloutMarker")
+}
+
+final class CalloutAttribute {
+    let type: String
+    let title: String
+    let color: NSColor
+    let icon: String
+    var isEditing: Bool
+    let id: UUID
+
+    init(type: String, title: String, color: NSColor, icon: String, isEditing: Bool = false, id: UUID = UUID()) {
+        self.type = type
+        self.title = title
+        self.color = color
+        self.icon = icon
+        self.isEditing = isEditing
+        self.id = id
+    }
 }
 
 final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
@@ -54,13 +77,14 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     /// Extend rendering bounds for code-block backgrounds (full container width)
     /// and block images drawn below text via paragraphSpacing.
+    private static let calloutBottomPadding: CGFloat = 15
+
     override var renderingSurfaceBounds: CGRect {
         var bounds = super.renderingSurfaceBounds
         if hasCodeBlockBackground || hasThematicBreak || hasBlockquote {
             let containerWidth = textLayoutManager?.textContainer?.size.width ?? bounds.width
-            // Extend left to container edge
             bounds.origin.x = -layoutFragmentFrame.origin.x
-            bounds.size.width = containerWidth
+            bounds.size.width = containerWidth + layoutFragmentFrame.origin.x
         }
         // Extend bounds to cover block images that render below the text line
         // (visibleSource mode uses paragraphSpacing to create space for the image).
@@ -79,20 +103,26 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         // 2. LaTeX images (behind text — hidden markers are invisible anyway)
         drawLatexImages(at: point, in: context)
 
-        // 3. Normal text
+        // 3. Callout backgrounds/bars (behind text)
+        drawCalloutBackgrounds(at: point, in: context)
+
+        // 4. Normal text
         super.draw(at: point, in: context)
 
-        // 4. Task checkboxes (on top of hidden [ ]/[x] markers)
+        // 5. Callout icons/titles (on top of hidden source text)
+        drawCalloutOverlays(at: point, in: context)
+
+        // 6. Task checkboxes (on top of hidden [ ]/[x] markers)
         drawTaskCheckboxes(at: point, in: context)
 
-        // 4b. Bullet glyphs (on top of hidden -/*/+ markers)
+        // 5b. Bullet glyphs (on top of hidden -/*/+ markers)
         drawBulletMarkers(at: point, in: context)
 
-        // 5. Thematic breaks (full-width line, painted last so it doesn't
+        // 6. Thematic breaks (full-width line, painted last so it doesn't
         //    fight with anything that already drew at the line's center)
         drawThematicBreaks(at: point, in: context)
 
-        // 6. Blockquote bars (left gutter, behind nothing — text is indented)
+        // 7. Blockquote bars (left gutter, behind nothing — text is indented)
         drawBlockquoteBars(at: point, in: context)
     }
 
@@ -101,8 +131,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// NSRange in the document for this fragment's content.
     private var fragmentNSRange: NSRange? {
         guard let tcs = textLayoutManager?.textContentManager as? NSTextContentStorage else { return nil }
-        let start = tcs.offset(from: tcs.documentRange.location, to: rangeInElement.location)
-        let end = tcs.offset(from: tcs.documentRange.location, to: rangeInElement.endLocation)
+        return Self.nsRange(for: self, in: tcs)
+    }
+
+    private static func nsRange(for fragment: NSTextLayoutFragment, in tcs: NSTextContentStorage) -> NSRange? {
+        let start = tcs.offset(from: tcs.documentRange.location, to: fragment.rangeInElement.location)
+        let end = tcs.offset(from: tcs.documentRange.location, to: fragment.rangeInElement.endLocation)
         guard start != NSNotFound, end != NSNotFound, end > start else { return nil }
         return NSRange(location: start, length: end - start)
     }
@@ -452,14 +486,17 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// run of quote lines reads as one continuous bar.
     private func drawBlockquoteBars(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        guard !hasCallout(in: range, textStorage: ts) else { return }
         var anyLevel = false
         ts.enumerateAttribute(.blockquoteLevel, in: range, options: []) { value, _, stop in
             if value is Int { anyLevel = true; stop.pointee = true }
         }
         guard anyLevel else { return }
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let textView = textLayoutManager?.textContainer?.textView
+        let baseFont = (textView as? NativeTextView)?.baseFont
+            ?? (textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
+        let theme = (textView as? NativeTextView)?.configuration.theme ?? .default
         let indentPerLevel = Self.blockquoteIndentPerLevel
         let barWidth = Self.blockquoteBarWidth
 
@@ -471,6 +508,9 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
         let fragLocation = fragmentNSRange?.location ?? 0
         let leftEdge = point.x - layoutFragmentFrame.origin.x
+        let isLastFragment = isLastBlockquoteFragment(in: range, textStorage: ts)
+        let lastRealLine = textLineFragments.last { fragLocation + $0.characterRange.location < ts.length }
+
         for lineFragment in textLineFragments {
             let lr = lineFragment.characterRange
             let docStart = fragLocation + lr.location
@@ -482,14 +522,191 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             if let level = ts.attribute(.blockquoteLevel, at: docStart, effectiveRange: nil) as? Int {
                 // tb.origin.y is already relative to this layout fragment.
                 let barY = point.y + tb.origin.y
+                let extend = isLastFragment && lineFragment === lastRealLine
+                let fontHeight = baseFont.ascender - baseFont.descender
+                let bottomPadding = max(0, tb.height - fontHeight)
+                let barHeight = tb.height + (extend ? bottomPadding : 0)
                 for i in 0..<level {
                     let barX = leftEdge + CGFloat(i) * indentPerLevel + indentPerLevel * 0.25
                     NSBezierPath(rect: CGRect(
-                        x: barX, y: barY, width: barWidth, height: tb.height
+                        x: barX, y: barY, width: barWidth, height: barHeight
                     )).fill()
                 }
             }
         }
+    }
+
+    // MARK: - Callouts
+
+    /// Draw a callout background + left accent bar behind text. The icon/title
+    /// overlay is drawn afterward in `drawCalloutOverlays` so it renders on top
+    /// of the hidden source text.
+    private func drawCalloutBackgrounds(at point: CGPoint, in context: CGContext) {
+        guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        guard let ca = calloutAttribute(in: range, textStorage: ts) else { return }
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.current = nsContext
+
+        let calloutColor = ca.color
+        let containerWidth = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
+        let leftEdge = point.x - layoutFragmentFrame.origin.x
+        let level = calloutLevel(in: range, textStorage: ts) ?? 1
+
+        // Vertical span of the whole callout block.
+        var firstY: CGFloat?
+        var lastMaxY: CGFloat?
+        for lineFragment in textLineFragments {
+            let tb = lineFragment.typographicBounds
+            let y = point.y + tb.origin.y
+            let maxY = y + tb.height
+            if firstY == nil { firstY = y }
+            lastMaxY = max(lastMaxY ?? y, maxY)
+        }
+        guard let firstY = firstY, var lastMaxY = lastMaxY else { return }
+
+        // Background fill — plain rectangle spanning the full container width.
+        let isLast = isLastCalloutFragment(in: range, textStorage: ts)
+        if isLast { lastMaxY += Self.calloutBottomPadding }
+        let bgRect = CGRect(x: leftEdge, y: firstY, width: containerWidth, height: lastMaxY - firstY)
+        let bgPath = NSBezierPath(rect: bgRect)
+        calloutColor.withAlphaComponent(0.1).setFill()
+        bgPath.fill()
+
+        // Left accent bar, aligned with the innermost blockquote bar for this level.
+        let barX = leftEdge + CGFloat(level - 1) * Self.blockquoteIndentPerLevel + Self.blockquoteIndentPerLevel * 0.25
+        let barRect = CGRect(x: barX, y: firstY, width: Self.blockquoteBarWidth, height: lastMaxY - firstY)
+        calloutColor.setFill()
+        NSBezierPath(rect: barRect).fill()
+    }
+
+    /// Draw the SF Symbol icon and rendered title for a callout. Called after
+    /// `super.draw` so the replacement text appears on top of the hidden source.
+    private func drawCalloutOverlays(at point: CGPoint, in context: CGContext) {
+        guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        guard let ca = calloutAttribute(in: range, textStorage: ts) else { return }
+
+        // In edit mode the raw Markdown is visible, so skip the rendered icon.
+        guard !ca.isEditing else { return }
+
+        // Icon only on the first fragment of the callout block.
+        guard isFirstCalloutFragment(in: range, textStorage: ts),
+              let firstLine = textLineFragments.first else { return }
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.current = nsContext
+
+        let calloutColor = ca.color
+        let calloutIcon = ca.icon
+        let leftEdge = point.x - layoutFragmentFrame.origin.x
+        let level = calloutLevel(in: range, textStorage: ts) ?? 1
+        let indent = CGFloat(level) * Self.blockquoteIndentPerLevel
+
+        let tb = firstLine.typographicBounds
+        let lineY = point.y + tb.origin.y
+
+        let textView = textLayoutManager?.textContainer?.textView
+        let baseFont = (textView as? NativeTextView)?.baseFont
+            ?? (textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
+
+        let iconHeight = ceil(baseFont.ascender - baseFont.descender)
+        let iconWidth = iconHeight + 4
+        let iconX = leftEdge + indent + Self.blockquoteIndentPerLevel * 0.5
+        let firstCharPos = firstLine.locationForCharacter(at: firstLine.characterRange.location)
+        let baselineY = lineY + firstCharPos.y
+        let iconCenterY = baselineY - baseFont.capHeight / 2
+        let iconY = iconCenterY - iconHeight / 2
+
+        if let baseSymbol = NSImage(systemSymbolName: calloutIcon, accessibilityDescription: nil) {
+            let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: calloutColor)
+            let refConfig = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            let refSymbol = baseSymbol.withSymbolConfiguration(refConfig.applying(colorConfig)) ?? baseSymbol
+            let refSize = refSymbol.size
+            let scale = iconHeight / refSize.height
+            let drawWidth = refSize.width * scale
+            let drawX = iconX + (iconWidth - drawWidth) / 2
+            refSymbol.draw(in: CGRect(x: drawX, y: iconY, width: drawWidth, height: iconHeight))
+        }
+    }
+
+    private func isFirstCalloutFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {
+        let currentCallout = calloutAttribute(in: range, textStorage: textStorage)
+        guard let tlm = textLayoutManager,
+              let tcm = tlm.textContentManager as? NSTextContentStorage else { return true }
+        guard let prevLocation = tcm.location(rangeInElement.location, offsetBy: -1),
+              let prevFragment = tlm.textLayoutFragment(for: prevLocation),
+              let prevRange = Self.nsRange(for: prevFragment, in: tcm) else { return true }
+        guard let prevCallout = calloutAttribute(in: prevRange, textStorage: textStorage) else { return true }
+        return prevCallout.id != currentCallout?.id
+    }
+
+    private func isLastCalloutFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {
+        let currentCallout = calloutAttribute(in: range, textStorage: textStorage)
+        var nextIndex = NSMaxRange(range)
+        let nsText = textStorage.string as NSString
+        while nextIndex < textStorage.length {
+            let ch = nsText.character(at: nextIndex)
+            if ch == 0x0A || ch == 0x0D {
+                nextIndex += 1
+                continue
+            }
+            break
+        }
+        guard nextIndex < textStorage.length else { return true }
+        guard let nextCallout = textStorage.attribute(.callout, at: nextIndex, effectiveRange: nil) as? CalloutAttribute
+        else { return true }
+        // Adjacent callout blocks have distinct UUIDs; same id → continuation
+        // of the same callout, different id → this is the last fragment of its own.
+        return nextCallout.id != currentCallout?.id
+    }
+
+    private func isLastBlockquoteFragment(in range: NSRange, textStorage: NSTextStorage) -> Bool {
+        guard let tlm = textLayoutManager,
+              let tcm = tlm.textContentManager as? NSTextContentStorage else { return true }
+        guard let nextLocation = tcm.location(rangeInElement.endLocation, offsetBy: 1),
+              let nextFragment = tlm.textLayoutFragment(for: nextLocation),
+              let nextRange = Self.nsRange(for: nextFragment, in: tcm) else { return true }
+        var nextHasBlockquote = false
+        var nextHasCallout = false
+        textStorage.enumerateAttribute(.blockquoteLevel, in: nextRange, options: []) { value, _, stop in
+            if value is Int { nextHasBlockquote = true; stop.pointee = true }
+        }
+        textStorage.enumerateAttribute(.callout, in: nextRange, options: []) { value, _, stop in
+            if value is CalloutAttribute { nextHasCallout = true; stop.pointee = true }
+        }
+        // A plain blockquote bar ends when the next fragment is not a blockquote,
+        // or when it becomes a callout (callouts draw their own accent bar).
+        return !nextHasBlockquote || nextHasCallout
+    }
+
+    private func calloutAttribute(in range: NSRange, textStorage: NSTextStorage) -> CalloutAttribute? {
+        var result: CalloutAttribute?
+        textStorage.enumerateAttribute(.callout, in: range, options: []) { value, _, stop in
+            if let ca = value as? CalloutAttribute {
+                result = ca
+                stop.pointee = true
+            }
+        }
+        return result
+    }
+
+    private func hasCallout(in range: NSRange, textStorage: NSTextStorage) -> Bool {
+        calloutAttribute(in: range, textStorage: textStorage) != nil
+    }
+
+    private func calloutLevel(in range: NSRange, textStorage: NSTextStorage) -> Int? {
+        var result: Int?
+        textStorage.enumerateAttribute(.blockquoteLevel, in: range, options: []) { value, _, stop in
+            if let level = value as? Int {
+                result = level
+                stop.pointee = true
+            }
+        }
+        return result
     }
 
     // MARK: - Bullet Markers

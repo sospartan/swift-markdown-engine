@@ -47,6 +47,7 @@ enum BlockLevelTokenizer {
         case .fencedCode:  return codeBlock(in: sub)
         case .heading:     return heading(in: sub)
         case .blockquote:  return blockquote(in: sub)
+        case .callout:     return calloutTokens(in: sub)
         case .table:       return table(in: sub)
         case .blockLatex:  return blockLatex(in: sub)
         case .paragraph, .list, .thematicBreak, .blank:
@@ -104,6 +105,23 @@ enum BlockLevelTokenizer {
             lineStart = nextStart
         }
         return tokens
+    }
+
+    // MARK: - Callout  (single token spans the entire block, like codeBlock)
+
+    private static func calloutTokens(in s: NSString) -> [MarkdownToken] {
+        let len = s.length
+        guard len > 0 else { return [] }
+        var contentEnd = len
+        if contentEnd > 0 {
+            let last = s.character(at: contentEnd - 1)
+            if last == lf || last == cr { contentEnd -= 1 }
+        }
+        return [MarkdownToken(
+            kind: .callout,
+            range: NSRange(location: 0, length: len),
+            contentRange: NSRange(location: 0, length: contentEnd),
+            markerRanges: [])]
     }
 
     // MARK: - Fenced code  (legacy ```lang\n…\n```)

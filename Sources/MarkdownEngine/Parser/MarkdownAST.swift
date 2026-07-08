@@ -35,12 +35,13 @@ indirect enum BlockNode: Equatable {
     case table(range: NSRange)
     case thematicBreak(range: NSRange)
     case blank(range: NSRange)
+    case callout(type: String, title: String, range: NSRange, inlines: [InlineNode])
 
     var range: NSRange {
         switch self {
         case .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
              .list(let r, _), .codeBlock(let r), .blockLatex(let r), .table(let r),
-             .thematicBreak(let r), .blank(let r):
+             .thematicBreak(let r), .blank(let r), .callout(_, _, let r, _):
             return r
         }
     }
@@ -81,6 +82,9 @@ enum DocumentAST {
             return .codeBlock(range: block.range)
         case .blockLatex:
             return .blockLatex(range: block.range)
+        case .callout(let type, let title):
+            return .callout(type: type, title: title ?? type.capitalized, range: block.range,
+                            inlines: scoped ? InlineParser.parse(ns, range: block.range) : [])
         case .table:
             return .table(range: block.range)
         case .thematicBreak:

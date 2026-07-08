@@ -151,6 +151,57 @@ Need a different highlighter library entirely? Implement
 above for the declaration) and reference the bundled bridge in
 `Sources/MarkdownEngineCodeBlocks/` as a working example.
 
+### Callouts
+
+Callouts render GFM-style `> [!TYPE] Title` blocks with configurable
+colors and SF Symbol icons, entirely independent of plain blockquotes.
+The engine ships with no built-in style mapping — embedders define their
+own types via `CalloutConfiguration`:
+
+```swift
+var configuration = MarkdownEditorConfiguration.default
+configuration.callout = CalloutConfiguration(types: [
+    "note":     CalloutConfiguration.CalloutStyle(color: .systemBlue,   icon: "note.text"),
+    "warning":  CalloutConfiguration.CalloutStyle(color: .systemOrange, icon: "exclamationmark.triangle"),
+    "tip":      CalloutConfiguration.CalloutStyle(color: .systemTeal,   icon: "lightbulb"),
+    "info":     CalloutConfiguration.CalloutStyle(color: .systemBlue,   icon: "info.circle"),
+    "danger":   CalloutConfiguration.CalloutStyle(color: .systemRed,    icon: "flame"),
+    "success":  CalloutConfiguration.CalloutStyle(color: .systemGreen,  icon: "checkmark.circle"),
+    "question": CalloutConfiguration.CalloutStyle(color: .systemPurple, icon: "questionmark.circle"),
+    "example":  CalloutConfiguration.CalloutStyle(color: .systemPurple, icon: "list.number"),
+    "quote":    CalloutConfiguration.CalloutStyle(color: .systemGray,   icon: "quote.opening"),
+])
+```
+
+Type names are case-insensitive. Multiple aliases can map to the same style
+(e.g. `"hint"` and `"important"` both aliased to the `"tip"` color+icon).
+
+**Activation**: Set `BlockParser.calloutTypes` once at startup — the engine
+reads this static variable internally and requires no method signature changes:
+
+```swift
+BlockParser.calloutTypes = configuration.callout.activeTypes
+```
+
+When `callout` is `.none` (the default), `> [!TYPE]` lines render as plain
+blockquotes, preserving backward compatibility.
+
+**Writing callouts in Markdown**:
+
+```markdown
+> [!NOTE] Useful information
+> This is the callout body. It supports **bold**, *italic*, and other
+> inline Markdown formatting on body lines.
+
+> [!WARNING] Breaking Change
+> Multi-line callouts work naturally — just continue with `>` on each
+> body line. A blank line separates adjacent callout blocks.
+```
+
+The title text after the type marker is always visible and auto-wraps
+to multiple lines when needed. The `[!TYPE]` syntax marker is hidden in
+reading mode and revealed while editing.
+
 ### LaTeX Rendering
 
 **Recommended path: depend on the `MarkdownEngineLatex` product and use
