@@ -181,8 +181,16 @@ struct MarkdownASTStylerTests {
 
     @Test("Callout attributes are emitted per line")
     func calloutAttributes() {
+        BlockParser.calloutTypes = ["info"]
+        defer { BlockParser.calloutTypes = nil }
+        var config = MarkdownEditorConfiguration.default
+        config.callout = CalloutConfiguration(types: [
+            "info": CalloutConfiguration.CalloutStyle(color: .systemBlue, icon: "info.circle")
+        ])
         let text = "> [!INFO] My Title\n> body line"
-        let attrs = MarkdownASTStyler.styleAttributes(text: text, fontName: fontName, fontSize: base)
+        let attrs = MarkdownASTStyler.styleAttributes(
+            text: text, fontName: fontName, fontSize: base, configuration: config
+        )
         let ns = text as NSString
 
         let calloutRanges = attrs.filter { $0.attributes[.callout] != nil }
@@ -194,22 +202,32 @@ struct MarkdownASTStylerTests {
             #expect(ca?.isEditing == false)
         }
 
+        // Title is always visible (bold + bodyText).
         let titleRange = ns.range(of: "My Title")
-        #expect(color(in: attrs, at: titleRange.location) == NSColor.clear)
-        #expect(isHiddenMarkerFont(in: attrs, at: titleRange.location))
+        #expect(font(in: attrs, at: titleRange.location)?.fontDescriptor.symbolicTraits.contains(.bold) == true)
+        #expect(color(in: attrs, at: titleRange.location) == MarkdownEditorTheme.default.bodyText)
 
+        // [!INFO] marker is hidden (clear + tiny font) when inactive.
         let markerRange = ns.range(of: "[!INFO]")
         #expect(color(in: attrs, at: markerRange.location) == NSColor.clear)
-        #expect(isHiddenMarkerFont(in: attrs, at: markerRange.location))
 
+        // Body line: medium body font + bodyText.
         let bodyRange = ns.range(of: "body line")
         #expect(color(in: attrs, at: bodyRange.location) == MarkdownEditorTheme.default.bodyText)
     }
 
     @Test("Multi-line callout tags every line including escaped body lines")
     func multiLineCallout() {
+        BlockParser.calloutTypes = ["info"]
+        defer { BlockParser.calloutTypes = nil }
+        var config = MarkdownEditorConfiguration.default
+        config.callout = CalloutConfiguration(types: [
+            "info": CalloutConfiguration.CalloutStyle(color: .systemBlue, icon: "info.circle")
+        ])
         let text = "> [!info] Important note\n> \\Escaped body line\n> Another line"
-        let attrs = MarkdownASTStyler.styleAttributes(text: text, fontName: fontName, fontSize: base)
+        let attrs = MarkdownASTStyler.styleAttributes(
+            text: text, fontName: fontName, fontSize: base, configuration: config
+        )
         let calloutRanges = attrs.filter { $0.attributes[.callout] != nil }
         #expect(calloutRanges.count == 3)
         for entry in calloutRanges {
@@ -221,8 +239,16 @@ struct MarkdownASTStylerTests {
 
     @Test("Callout attributes are emitted for a realistic multi-line example")
     func calloutAttributesForRealisticExample() {
+        BlockParser.calloutTypes = ["info"]
+        defer { BlockParser.calloutTypes = nil }
+        var config = MarkdownEditorConfiguration.default
+        config.callout = CalloutConfiguration(types: [
+            "info": CalloutConfiguration.CalloutStyle(color: .systemBlue, icon: "info.circle")
+        ])
         let text = "> [!info] Important note\n> First body line\n> Another line"
-        let attrs = MarkdownASTStyler.styleAttributes(text: text, fontName: fontName, fontSize: base)
+        let attrs = MarkdownASTStyler.styleAttributes(
+            text: text, fontName: fontName, fontSize: base, configuration: config
+        )
         let ns = text as NSString
 
         let calloutRanges = attrs.filter { $0.attributes[.callout] != nil }
@@ -233,22 +259,29 @@ struct MarkdownASTStylerTests {
             #expect(ca?.title == "Important note")
         }
 
+        // Title is always visible (bold + bodyText).
         let titleRange = ns.range(of: "Important note")
-        #expect(color(in: attrs, at: titleRange.location) == NSColor.clear)
-        #expect(isHiddenMarkerFont(in: attrs, at: titleRange.location))
+        #expect(font(in: attrs, at: titleRange.location)?.fontDescriptor.symbolicTraits.contains(.bold) == true)
+        #expect(color(in: attrs, at: titleRange.location) == MarkdownEditorTheme.default.bodyText)
 
+        // [!info] marker is hidden (clear + tiny font) when inactive.
         let markerRange = ns.range(of: "[!info]")
         #expect(color(in: attrs, at: markerRange.location) == NSColor.clear)
-        #expect(isHiddenMarkerFont(in: attrs, at: markerRange.location))
     }
 
     @Test("Callout stays in callout mode while the caret is inside")
     func calloutRevealedWhenActive() {
+        BlockParser.calloutTypes = ["info"]
+        defer { BlockParser.calloutTypes = nil }
+        var config = MarkdownEditorConfiguration.default
+        config.callout = CalloutConfiguration(types: [
+            "info": CalloutConfiguration.CalloutStyle(color: .systemBlue, icon: "info.circle")
+        ])
         let text = "> [!INFO] My Title\n> body line"
         let ns = text as NSString
         let caret = ns.range(of: "body line").location + 1
         let attrs = MarkdownASTStyler.styleAttributes(
-            text: text, fontName: fontName, fontSize: base, caretLocation: caret
+            text: text, fontName: fontName, fontSize: base, caretLocation: caret, configuration: config
         )
 
         // The whole block remains a callout in edit mode.
@@ -257,18 +290,16 @@ struct MarkdownASTStylerTests {
         let editingRanges = attrs.filter { ($0.attributes[.callout] as? CalloutAttribute)?.isEditing == true }
         #expect(editingRanges.count == 2)
 
-        // Raw title text is visible instead of hidden, styled like blockquote content.
+        // Title is always bold (visible even in edit mode).
         let titleRange = ns.range(of: "My Title")
-        #expect(!isHiddenMarkerFont(in: attrs, at: titleRange.location))
-        #expect(font(in: attrs, at: titleRange.location)?.fontDescriptor.symbolicTraits.contains(.bold) != true)
-        #expect(color(in: attrs, at: titleRange.location) == MarkdownEditorTheme.default.mutedText)
+        #expect(font(in: attrs, at: titleRange.location)?.fontDescriptor.symbolicTraits.contains(.bold) == true)
+        #expect(color(in: attrs, at: titleRange.location) == MarkdownEditorTheme.default.bodyText)
 
-        // The `[!INFO]` marker is also muted, not callout-colored.
+        // [!INFO] marker is muted when active (editing), not hidden.
         let markerRange = ns.range(of: "[!INFO]")
-        #expect(!isHiddenMarkerFont(in: attrs, at: markerRange.location))
         #expect(color(in: attrs, at: markerRange.location) == MarkdownEditorTheme.default.mutedText)
 
-        // The `>` marker is muted like a normal blockquote marker.
+        // `>` marker is muted when active.
         let gtRange = ns.range(of: "> ")
         #expect(color(in: attrs, at: gtRange.location) == MarkdownEditorTheme.default.mutedText)
 
