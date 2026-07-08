@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediately; the current document's undo stack is dropped on a switch
   because undo actions recorded against the other mode's display text would
   replay at stale ranges. Default `false` — existing embedders are unaffected.
+- Callout block support: GFM-style `> [!NOTE]`, `> [!WARNING]`, `> [!TIP]`,
+  `> [!IMPORTANT]`, `> [!CAUTION]` and more are recognized as a separate block
+  type distinct from plain blockquotes. Each callout renders a full-width
+  background fill, color-coded left accent bar, and an SF Symbol icon. Title
+  text after the type marker (e.g. `> [!NOTE] My Title`) is always visible
+  and auto-wrapping; in render mode the `[!TYPE]` syntax marker is hidden,
+  in edit mode it is revealed. Colors and icons are config-driven through
+  `CalloutConfiguration` — embedders supply a type-to-color+icon mapping and
+  the engine renders accordingly. Activation is a one-liner:
+  `BlockParser.calloutTypes = config.callout.activeTypes`. Callout blocks use
+  the same single-token-per-block model as fenced code blocks, so incremental
+  editing naturally expands to the full block range.
 
 ### Fixed
 - Inline syntax markers (`**`, `*`, `~~`, `==`) now use `mutedText` foreground
@@ -45,7 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   competing `.link` attribute on top of the link — making the raw URL independently
   navigable and offsetting the click edit zone. Bare URLs outside links still
   autolink; URLs inside code were already excluded.
-
 ## [0.8.0] - 2026-06-28
 
 ### Added

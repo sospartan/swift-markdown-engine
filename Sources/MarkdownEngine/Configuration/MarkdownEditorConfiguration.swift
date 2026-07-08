@@ -37,6 +37,7 @@ public struct MarkdownEditorConfiguration: Sendable {
     public var blockLatex: BlockLatexStyle
     public var inlineLatex: InlineLatexStyle
     public var blockquote: BlockquoteStyle
+    public var callout: CalloutConfiguration
     public var link: LinkStyle
     public var paragraph: ParagraphStyle
     public var overscroll: OverscrollPolicy
@@ -82,6 +83,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         blockLatex: BlockLatexStyle = .default,
         inlineLatex: InlineLatexStyle = .default,
         blockquote: BlockquoteStyle = .default,
+        callout: CalloutConfiguration = .none,
         link: LinkStyle = .default,
         paragraph: ParagraphStyle = .default,
         overscroll: OverscrollPolicy = .default,
@@ -105,6 +107,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.blockLatex = blockLatex
         self.inlineLatex = inlineLatex
         self.blockquote = blockquote
+        self.callout = callout
         self.link = link
         self.paragraph = paragraph
         self.overscroll = overscroll
@@ -412,6 +415,31 @@ public struct BlockquoteStyle: Sendable {
     }
 
     public static let `default` = BlockquoteStyle()
+}
+
+// MARK: - Callouts
+
+public struct CalloutConfiguration: Sendable {
+    public let types: [String: CalloutStyle]
+
+    public var activeTypes: Set<String> { Set(types.keys.map { $0.lowercased() }) }
+    public var isEmpty: Bool { types.isEmpty }
+
+    public init(types: [String: CalloutStyle] = [:]) {
+        self.types = types
+    }
+
+    public static let none = CalloutConfiguration()
+
+    public struct CalloutStyle: Sendable {
+        public let color: NSColor
+        public let icon: String
+
+        public init(color: NSColor, icon: String) {
+            self.color = color
+            self.icon = icon
+        }
+    }
 }
 
 // MARK: - Links

@@ -97,7 +97,8 @@ enum MarkdownASTStyler {
         for block in blocks {
             switch block {
             case .codeBlock(let range): ranges.append(range)
-            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines):
+            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines),
+                 .callout(_, _, _, let inlines):
                 walk(inlines)
             case .list(_, let items):
                 for item in items { walk(item.inlines) }
@@ -134,7 +135,8 @@ enum MarkdownASTStyler {
         }
         for block in blocks {
             switch block {
-            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines):
+            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines),
+                 .callout(_, _, _, let inlines):
                 walk(inlines)
             case .list(_, let items):
                 for item in items { walk(item.inlines) }
@@ -276,11 +278,16 @@ enum MarkdownASTStyler {
                         #"\[[^\]\r\n]+\]\([^)\r\n]*$"#, #"\[[^\]\r\n]+\]\(\)"#]
         let muted = ctx.theme.mutedText
         let faded = ctx.theme.incompleteLink.withAlphaComponent(ctx.config.link.incompleteLinkAlpha)
+        let calloutMarkerRanges = attrs.compactMap { entry -> NSRange? in
+            entry.attributes[.calloutMarker] != nil ? entry.range : nil
+        }
         for pattern in patterns {
             guard let re = regex(pattern, false) else { continue }
             for scan in ctx.scanRanges {
               for m in re.matches(in: ctx.text, options: [], range: scan)
-                  where !isInCode(m.range, codeRanges) && !isInCode(m.range, checkboxRanges) {
+                  where !isInCode(m.range, codeRanges)
+                    && !isInCode(m.range, checkboxRanges)
+                    && !calloutMarkerRanges.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
                 for (i, ch) in ctx.ns.substring(with: m.range).enumerated() {
                     let r = NSRange(location: m.range.location + i, length: 1)
                     let isBracket = ch == "[" || ch == "]" || ch == "(" || ch == ")"
@@ -355,6 +362,9 @@ enum MarkdownASTStyler {
             styleBlockquote(range: range, ctx: ctx, into: &attrs)
             styleInlines(inlines, font: font, ctx: ctx, into: &attrs)
 
+        case .callout(let type, let title, let range, _):
+            styleCallout(type: type, title: title, range: range, ctx: ctx, into: &attrs)
+
         case .list(_, let items):
             for item in items {
                 styleListItem(item, ctx: ctx, into: &attrs)
@@ -426,6 +436,148 @@ enum MarkdownASTStyler {
             attrs.append((tokenRange, [.blockquoteLevel: level]))
         }
     }
+
+    // MARK: - Callout Styling
+
+    private static func styleCallout(
+        type: String, title: String, range: NSRange, ctx: Ctx, into attrs: inout [StyledRange]
+    ) {
+        let indentPerLevel = MarkdownTextLayoutFragment.blockquoteIndentPerLevel
+        let active = ctx.isActive(range)
+        guard let style = ctx.config.callout.types[type] else { return }
+
+        let calloutAttr = CalloutAttribute(
+            type: type, title: title, color: style.color, icon: style.icon, isEditing: active
+        )
+
+        var lineStart = range.location
+        let end = NSMaxRange(range)
+        while lineStart < end {
+            let line = ctx.ns.lineRange(for: NSRange(location: lineStart, length: 0))
+            let lineEnd = NSMaxRange(line)
+            let isFirstLine = lineStart == range.location
+            var i = line.location
+            var indent = 0
+            while i < lineEnd, indent < 3, ctx.ns.character(at: i) == 0x20 || ctx.ns.character(at: i) == 0x09 {
+                i += 1; indent += 1
+            }
+            let markerStart = i
+            var level = 0
+            var j = i
+            while j < lineEnd, ctx.ns.character(at: j) == 0x3E /* > */ {
+                level += 1; j += 1
+                if j < lineEnd, ctx.ns.character(at: j) == 0x20 || ctx.ns.character(at: j) == 0x09 { j += 1 }
+            }
+            defer { lineStart = lineEnd }
+            guard level > 0 else { continue }
+
+            var contentEnd = lineEnd
+            if contentEnd > j {
+                let last = ctx.ns.character(at: contentEnd - 1)
+                if last == 0x0A || last == 0x0D { contentEnd -= 1 }
+            }
+            let markerRange = NSRange(location: markerStart, length: j - markerStart)
+            let contentRange = NSRange(location: j, length: max(0, contentEnd - j))
+            let tokenRange = NSRange(location: line.location, length: contentEnd - line.location)
+
+            let textIndent = CGFloat(level) * indentPerLevel + indentPerLevel * 0.5
+            let iconWidth = ceil(ctx.baseFont.ascender - ctx.baseFont.descender) + 4
+
+            let para = NSMutableParagraphStyle()
+            para.firstLineHeadIndent = (isFirstLine && !active) ? textIndent + iconWidth : textIndent
+            para.headIndent = textIndent
+            let lineHeight = ctx.baseLineHeight + ctx.config.blockquote.extraLineHeight
+            para.minimumLineHeight = lineHeight
+            // First line in render mode allows wrapping for long titles (no max).
+            if active || !isFirstLine { para.maximumLineHeight = lineHeight }
+            para.paragraphSpacing = (lineEnd >= end)
+                ? max(ctx.baseParagraphSpacing, bottomPadding)
+                : 0
+            para.paragraphSpacingBefore = 0
+
+            // Stamp callout attribute on every line so the renderer can find it.
+            attrs.append((tokenRange, [.callout: calloutAttr]))
+
+            let bodyFont: NSFont = {
+                let desc = ctx.baseFont.fontDescriptor.addingAttributes([
+                    .traits: [NSFontDescriptor.TraitKey.weight: NSFont.Weight.medium]
+                ])
+                return NSFont(descriptor: desc, size: ctx.baseFont.pointSize) ?? ctx.baseFont
+            }()
+            let titleFont = NSFontManager.shared.convert(ctx.baseFont, toHaveTrait: .boldFontMask)
+
+            if contentRange.length > 0 {
+                if isFirstLine {
+                    // First line has `[!TYPE] title`; hide the syntax marker, bold the title.
+                    let contentStr = ctx.ns.substring(with: contentRange)
+                    let contentNS = contentStr as NSString
+                    let bracketRange = contentNS.range(of: "[!")
+                    let closeRange = contentNS.range(of: "]", options: [], range: bracketRange.location != NSNotFound
+                        ? NSRange(location: bracketRange.location, length: contentNS.length - bracketRange.location)
+                        : NSRange(location: 0, length: contentNS.length))
+                    if bracketRange.location != NSNotFound, closeRange.location != NSNotFound {
+                        let markerLen = closeRange.location + 1 - bracketRange.location
+                        let markerDocRange = NSRange(location: contentRange.location + bracketRange.location, length: markerLen)
+                        let afterMarker = bracketRange.location + markerLen
+                        var titleStart = afterMarker
+                        while titleStart < contentNS.length,
+                              contentNS.character(at: titleStart) == 0x20 || contentNS.character(at: titleStart) == 0x09 {
+                            titleStart += 1
+                        }
+                        let titleDocRange = NSRange(location: contentRange.location + titleStart,
+                                                     length: contentNS.length - titleStart)
+                        // Title: always bold
+                        if titleDocRange.length > 0 {
+                            attrs.append((titleDocRange, [
+                                .font: titleFont,
+                                .foregroundColor: ctx.theme.bodyText,
+                            ]))
+                        }
+                        // [!TYPE] marker: hide when inactive, show muted when editing.
+                        // When the title is empty, use base font for the marker
+                        // so the line retains its height (clear color keeps it invisible).
+                        let hideFont: NSFont = (!active && titleDocRange.length == 0)
+                            ? ctx.baseFont : ctx.inlineMarkerFont
+                        if active {
+                            attrs.append((markerDocRange, [.foregroundColor: ctx.theme.mutedText]))
+                        } else {
+                            attrs.append((markerDocRange, [
+                                .foregroundColor: NSColor.clear,
+                                .font: hideFont,
+                            ]))
+                        }
+                        // Also stamp callout marker so regex passes skip it
+                        attrs.append((markerDocRange, [.calloutMarker: true]))
+                    } else {
+                        attrs.append((contentRange, [
+                            .font: bodyFont,
+                            .foregroundColor: ctx.theme.bodyText,
+                        ]))
+                    }
+                } else {
+                    attrs.append((contentRange, [
+                        .font: bodyFont,
+                        .foregroundColor: ctx.theme.bodyText,
+                    ]))
+                }
+            }
+
+            attrs.append((ctx.ns.paragraphRange(for: tokenRange), [.paragraphStyle: para]))
+
+            // `>` marker visibility.
+            if active || ctx.isActive(tokenRange) {
+                attrs.append((markerRange, [.foregroundColor: ctx.theme.mutedText]))
+            } else {
+                attrs.append((markerRange, [.foregroundColor: NSColor.clear, .font: ctx.inlineMarkerFont]))
+            }
+
+            attrs.append((tokenRange, [.blockquoteLevel: level]))
+        }
+    }
+
+    // MARK: - Code Block
+
+    private static let bottomPadding: CGFloat = 15
 
     private static func styleCodeBlock(range: NSRange, ctx: Ctx, into attrs: inout [StyledRange]) {
         let parts = codeBlockParts(range, ctx.ns)
@@ -588,7 +740,7 @@ enum MarkdownASTStyler {
             case .heading(_, let range, let markers, let inlines):
                 if !ctx.isActive(range) { shrink(markers, ctx: ctx, into: &attrs) }
                 shrinkInlineMarkers(inlines, ctx: ctx, into: &attrs)
-            case .paragraph(_, let inlines), .blockquote(_, let inlines):
+            case .paragraph(_, let inlines), .blockquote(_, let inlines), .callout(_, _, _, let inlines):
                 shrinkInlineMarkers(inlines, ctx: ctx, into: &attrs)
             case .list(_, let items):
                 // Phase A: shrink only inline markers; the list marker is hidden by the bullet/task pass.

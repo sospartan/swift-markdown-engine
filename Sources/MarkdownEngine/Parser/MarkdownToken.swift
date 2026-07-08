@@ -24,6 +24,8 @@ enum MarkdownTokenKind {
     case heading
     /// One blockquote line; `markerRanges[0]` is the `>` run, nesting = count of `>`.
     case blockquote
+    /// One callout line (GFM-style `> [!TYPE] Title`); per-line token like blockquote.
+    case callout
     case codeBlock
     case inlineCode
     case blockLatex

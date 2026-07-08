@@ -253,6 +253,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         textView.maxOverscrollPoints = configuration.overscroll.maxPoints
         textView.minOverscrollPoints = configuration.overscroll.minPoints
         context.coordinator.configuration = configuration
+        BlockParser.calloutTypes = configuration.callout.isEmpty ? nil : configuration.callout.activeTypes
         textView.insertionPointColor = configuration.theme.bodyText
         textView.isEditable = isEditable
         textView.isSelectable = true

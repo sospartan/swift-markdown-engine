@@ -33,6 +33,7 @@ enum BlockKind: Equatable {
     case table           // GFM table — opaque (rendered as a unit)
     case thematicBreak   // `---` / `***` / `___` — produces no token today
     case blank           // blank / whitespace-only line(s) — separator
+    case callout(type: String, title: String?)  // `> [!TYPE] title` — inline-bearing, like blockquote
 }
 
 /// One block; `range` is the absolute UTF-16 span of its lines, tiling with no gaps.
@@ -46,6 +47,11 @@ enum BlockParser {
     private static let cacheLock = NSLock()
     private static var cachedChars: [unichar]?     // UTF-16 buffer of the last parse
     private static var cachedBlocks: [Block]?
+
+    /// When non-nil and non-empty, `> [!TYPE]` lines whose TYPE is in this set
+    /// are classified as `.callout` instead of `.blockquote`. Set once by the
+    /// embedder before any text is parsed.
+    static var calloutTypes: Set<String>?
 
     /// Splits `text` into gap-free tiling blocks; memoizes the last parse so both per-keystroke callers share one line-scan.
     static func parse(_ text: String) -> [Block] {
@@ -222,6 +228,13 @@ enum BlockParser {
                 blocks.append(Block(kind: .heading, range: lines[i]))
                 i += 1
 
+            } else if let cts = Self.calloutTypes, !cts.isEmpty, isBlockquote(line),
+                      let info = calloutInfo(line, calloutTypes: cts) {
+                var end = i
+                while end + 1 < lines.count, isBlockquote(lineText(end + 1)) { end += 1 }
+                blocks.append(Block(kind: .callout(type: info.type, title: info.title), range: union(lines[i...end])))
+                i = end + 1
+
             } else if isBlockquote(line) {
                 var end = i
                 while end + 1 < lines.count, isBlockquote(lineText(end + 1)) { end += 1 }
@@ -342,6 +355,36 @@ enum BlockParser {
     /// A block-LaTeX opener: a line whose content starts with `$$`.
     private static func isBlockLatexOpen(_ line: String) -> Bool {
         line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("$$")
+    }
+
+    /// Extract (type, title) from a callout line `> [!TYPE] Title`, or nil.
+    /// Only called when `isBlockquote(line)` already passed, so we know the
+    /// line starts with `>` after optional indent.
+    private static func calloutInfo(_ line: String, calloutTypes: Set<String>) -> (type: String, title: String)? {
+        var rest = Substring(line).drop { $0 == " " || $0 == "\t" }
+        var indent = 0
+        while indent < 3, let c = rest.first, c == " " || c == "\t" { rest = rest.dropFirst(); indent += 1 }
+        guard rest.first == ">" else { return nil }
+        rest = rest.dropFirst()
+        while let c = rest.first, c == " " || c == "\t" { rest = rest.dropFirst() }
+        guard let first = rest.first, first == "[" else { return nil }
+        guard rest.count >= 4 else { return nil }
+        let afterBracket = rest.dropFirst()
+        guard afterBracket.first == "!" else { return nil }
+        let rest2 = afterBracket.dropFirst()
+        var typeChars = ""
+        var idx = rest2.startIndex
+        while idx < rest2.endIndex, rest2[idx].isLetter { typeChars.append(rest2[idx]); idx = rest2.index(after: idx) }
+        guard !typeChars.isEmpty, calloutTypes.contains(typeChars.lowercased()) else {
+            return nil
+        }
+        guard idx < rest2.endIndex, rest2[idx] == "]" else { return nil }
+        idx = rest2.index(after: idx)
+        if idx < rest2.endIndex, rest2[idx] == " " || rest2[idx] == "\t" { idx = rest2.index(after: idx) }
+        let tail = rest2[idx...]
+        let trimmed = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = trimmed.isEmpty ? typeChars.capitalized : trimmed
+        return (typeChars.lowercased(), title)
     }
 
     private static func union(_ ranges: ArraySlice<NSRange>) -> NSRange {
