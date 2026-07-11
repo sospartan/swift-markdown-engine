@@ -26,20 +26,36 @@ extension NativeTextView {
             return
         }
 
-        // Recover HTML tables only when plain text lacks table delimiters —
-        // otherwise the source already provided a usable text representation.
-        let plain = pasteboard.string(forType: .string)
-        let plainHasTableSep = plain.map { $0.contains("|") || $0.contains("\t") } ?? false
-
-        if !plainHasTableSep,
-           let html = pasteboard.string(forType: .html),
-           html.range(of: "<table", options: .caseInsensitive) != nil,
-           let markdownTable = Self.htmlTableToMarkdown(html) {
-            insertText(markdownTable, replacementRange: selectedRange())
-            return
+        // Our own copy: prefer the private raw-markdown flavor so an in-app
+        // copy→paste round-trips byte-exact. The derived HTML flavor is lossy
+        // (e.g. the HTML renderer drops the `|UUID` of a wiki link), so this
+        // must win over the HTML branch below.
+        if let ownMarkdown = pasteboard.string(forType: MarkdownPasteboardWriter.markdownType) {
+            let sanitized = sanitizePastedText(ownMarkdown)
+            if !sanitized.isEmpty {
+                insertPreservingBlockquote(sanitized)
+                return
+            }
         }
 
-        if let pasted = plain {
+        // Rich paste: convert an HTML flavor (Claude, browsers, Word, Notion)
+        // into Markdown so lists, headings, tables, and inline formatting
+        // survive — the Obsidian-style incoming direction. Only run the
+        // converter when the HTML actually carries block-level structure;
+        // inline-only HTML (VS Code's per-line <div>s, a casually copied bold
+        // word or link) would otherwise lose code indentation or gain stray
+        // markdown, so we let it fall through to the clean plain-text flavor.
+        if let html = pasteboard.string(forType: .html),
+           Self.htmlHasBlockStructure(html),
+           let markdown = HTMLToMarkdownConverter.markdown(fromHTML: html) {
+            let sanitized = sanitizePastedText(markdown)
+            if !sanitized.isEmpty {
+                insertPreservingBlockquote(sanitized)
+                return
+            }
+        }
+
+        if let pasted = pasteboard.string(forType: .string) {
             let sanitized = sanitizePastedText(pasted)
             if !sanitized.isEmpty {
                 insertPreservingBlockquote(sanitized)
@@ -58,13 +74,36 @@ extension NativeTextView {
         pasteAsPlainText(sender)
     }
 
+    /// Insert pasted content as its own coalescing-fenced undo step: the paste
+    /// enters via `insertText` (the typing path), so without fences before and
+    /// after, the next edit coalesces into it and one Cmd+Z reverts both.
+    private func insertPasted(_ text: String, replacementRange: NSRange) {
+        breakUndoCoalescing()
+        insertText(text, replacementRange: replacementRange)
+        undoManager?.setActionName("Paste")
+        breakUndoCoalescing()
+    }
+
     /// Insert pasted text, extending the `>` prefix to every line when the
     /// caret sits on a blockquote line — so a multi-line paste stays quoted
     /// instead of only its first line landing after the existing marker.
     private func insertPreservingBlockquote(_ text: String) {
         let sel = selectedRange()
-        let prepared = MarkdownLists.blockquoteContinuedPaste(text, at: sel.location, in: string)
-        insertText(prepared, replacementRange: sel)
+        var prepared = MarkdownLists.blockquoteContinuedPaste(text, at: sel.location, in: string)
+        // A paste ENDING in a table row would park the caret inside the table,
+        // keeping its raw pipe source on screen. Add a line break so the caret
+        // lands on a fresh line below and the table renders immediately.
+        if endsInTableRow(prepared) { prepared += "\n" }
+        insertPasted(prepared, replacementRange: sel)
+    }
+
+    /// Last line looks like a `|…|` table row and no newline follows it yet.
+    private func endsInTableRow(_ text: String) -> Bool {
+        guard !text.hasSuffix("\n"),
+              let lastLine = text.split(separator: "\n", omittingEmptySubsequences: false).last
+        else { return false }
+        let t = lastLine.trimmingCharacters(in: .whitespaces)
+        return t.count >= 3 && t.hasPrefix("|") && t.hasSuffix("|")
     }
 
     private func insertBlockEmbed(_ embed: String) {
@@ -79,7 +118,7 @@ extension NativeTextView {
         if afterLocation < nsText.length, nsText.character(at: afterLocation) != 0x0A {
             suffix = "\n"
         }
-        insertText(prefix + embed + suffix, replacementRange: sel)
+        insertPasted(prefix + embed + suffix, replacementRange: sel)
     }
 
     /// Reads the textual content of a pasted markdown/text file URL — the
@@ -117,71 +156,51 @@ extension NativeTextView {
         return super.validateUserInterfaceItem(item)
     }
 
-    // MARK: - HTML table → Markdown table
+    // MARK: - HTML structure guard
 
-    private static let trRegex = try! NSRegularExpression(
-        pattern: #"<tr\b[^>]*>(.*?)</tr>"#,
-        options: [.dotMatchesLineSeparators, .caseInsensitive]
-    )
-    private static let cellRegex = try! NSRegularExpression(
-        pattern: #"<t[hd]\b[^>]*>(.*?)</t[hd]>"#,
-        options: [.dotMatchesLineSeparators, .caseInsensitive]
-    )
-    private static let tagStripRegex = try! NSRegularExpression(
-        pattern: #"<[^>]+>"#
-    )
-
-    /// First `<table>` in `html` → CommonMark pipe-table; nil if no table.
-    static func htmlTableToMarkdown(_ html: String) -> String? {
-        guard html.range(of: "<table", options: .caseInsensitive) != nil else { return nil }
-        let nsHtml = html as NSString
-        let trMatches = trRegex.matches(in: html, range: NSRange(location: 0, length: nsHtml.length))
-        guard !trMatches.isEmpty else { return nil }
-
-        var rows: [[String]] = []
-        for trMatch in trMatches {
-            let trContent = nsHtml.substring(with: trMatch.range(at: 1))
-            let nsTr = trContent as NSString
-            let cellMatches = cellRegex.matches(in: trContent, range: NSRange(location: 0, length: nsTr.length))
-            var cells: [String] = []
-            for cellMatch in cellMatches {
-                let raw = nsTr.substring(with: cellMatch.range(at: 1))
-                let nsRaw = raw as NSString
-                let stripped = tagStripRegex.stringByReplacingMatches(
-                    in: raw, range: NSRange(location: 0, length: nsRaw.length), withTemplate: ""
-                )
-                let decoded = decodeHTMLEntities(stripped)
-                    .replacingOccurrences(of: "|", with: #"\|"#)
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                cells.append(decoded)
-            }
-            if !cells.isEmpty { rows.append(cells) }
+    /// True when `html` carries block-level structure worth converting to
+    /// Markdown — a list, heading, table, blockquote, preformatted block, or
+    /// horizontal rule. Inline-only markup (<div>/<span>/<b>/<i>/<a>/<p>) is not
+    /// enough: converting it would mangle VS Code's per-line <div> code or turn
+    /// a casually copied bold word / link into stray markdown, so those pastes
+    /// should fall through to the clean plain-text flavor instead.
+    static func htmlHasBlockStructure(_ html: String) -> Bool {
+        // "li" included bare: Chromium serializes a within-list selection as
+        // naked <li> elements without the ul/ol wrapper (Claude/ChatGPT copies).
+        let blockTags = ["ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+                         "table", "blockquote", "pre", "hr"]
+        for tag in blockTags where openingTagCount(html, tag, stopAfter: 1) > 0 {
+            return true
         }
-        guard !rows.isEmpty else { return nil }
-
-        let columnCount = rows.map(\.count).max() ?? 0
-        guard columnCount > 0 else { return nil }
-        func pad(_ row: [String]) -> [String] {
-            row + Array(repeating: "", count: max(0, columnCount - row.count))
+        // Formatted prose (chatbot / web / Word copy): several real paragraphs
+        // plus inline formatting. A lone styled word/sentence (≤1 <p>) and
+        // VS Code's div/span code (no <p> at all) stay on the plain-text path.
+        let inlineTags = ["strong", "em", "b", "i", "code", "mark", "del", "s", "a", "u"]
+        if openingTagCount(html, "p", stopAfter: 2) >= 2,
+           inlineTags.contains(where: { openingTagCount(html, $0, stopAfter: 1) > 0 }) {
+            return true
         }
-
-        var lines: [String] = []
-        lines.append("| " + pad(rows[0]).joined(separator: " | ") + " |")
-        lines.append("|" + Array(repeating: "---", count: columnCount).joined(separator: "|") + "|")
-        for row in rows.dropFirst() {
-            lines.append("| " + pad(row).joined(separator: " | ") + " |")
-        }
-        return lines.joined(separator: "\n")
+        return false
     }
 
-    private static func decodeHTMLEntities(_ s: String) -> String {
-        s.replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&apos;", with: "'")
-            .replacingOccurrences(of: "&nbsp;", with: " ")
+    /// Occurrences of an opening `<tag>` / `<tag …>` / `<tag/>` in `html`,
+    /// case-insensitive. The boundary check keeps prefixes from matching
+    /// (`<p` vs `<pre`, `<b` vs `<br>`, `<s` vs `<span`). Stops counting at
+    /// `stopAfter` so callers pay only for the answer they need.
+    private static func openingTagCount(_ html: String, _ tag: String, stopAfter: Int) -> Int {
+        let needle = "<" + tag
+        var count = 0
+        var searchRange = html.startIndex..<html.endIndex
+        while let r = html.range(of: needle, options: .caseInsensitive, range: searchRange) {
+            if r.upperBound < html.endIndex {
+                let c = html[r.upperBound]
+                if c == ">" || c == "/" || c == " " || c == "\t" || c == "\n" || c == "\r" {
+                    count += 1
+                    if count >= stopAfter { return count }
+                }
+            }
+            searchRange = r.upperBound..<html.endIndex
+        }
+        return count
     }
 }

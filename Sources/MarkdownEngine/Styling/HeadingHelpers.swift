@@ -27,14 +27,4 @@ enum HeadingHelpers {
     static func textWidth(_ text: String, font: NSFont) -> CGFloat {
         (text as NSString).size(withAttributes: [.font: font]).width
     }
-
-    static func checkboxExtraSpacing(
-        font: NSFont,
-        configuration: CheckboxStyle = .default
-    ) -> CGFloat {
-        max(
-            configuration.minimumExtraSpacing,
-            ceil(font.pointSize * configuration.extraSpacingPerFontPointFraction)
-        )
-    }
 }

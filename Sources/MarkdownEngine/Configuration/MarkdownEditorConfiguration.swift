@@ -36,7 +36,6 @@ public struct MarkdownEditorConfiguration: Sendable {
     public var imageEmbed: ImageEmbedStyle
     public var blockLatex: BlockLatexStyle
     public var inlineLatex: InlineLatexStyle
-    public var checkbox: CheckboxStyle
     public var blockquote: BlockquoteStyle
     public var link: LinkStyle
     public var paragraph: ParagraphStyle
@@ -82,7 +81,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         imageEmbed: ImageEmbedStyle = .default,
         blockLatex: BlockLatexStyle = .default,
         inlineLatex: InlineLatexStyle = .default,
-        checkbox: CheckboxStyle = .default,
         blockquote: BlockquoteStyle = .default,
         link: LinkStyle = .default,
         paragraph: ParagraphStyle = .default,
@@ -106,7 +104,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.imageEmbed = imageEmbed
         self.blockLatex = blockLatex
         self.inlineLatex = inlineLatex
-        self.checkbox = checkbox
         self.blockquote = blockquote
         self.link = link
         self.paragraph = paragraph
@@ -396,39 +393,6 @@ public struct InlineLatexStyle: Sendable {
     public init() { self.placeholder = () }
 
     public static let `default` = InlineLatexStyle()
-}
-
-// MARK: - Task checkboxes
-
-/// Glyph sizing and spacing for `- [ ]` / `- [x]` task checkboxes.
-public struct CheckboxStyle: Sendable {
-    /// Minimum extra spacing (points) inserted after an unchecked checkbox to
-    /// optically center the rendered glyph.
-    public var minimumExtraSpacing: CGFloat
-    /// Additional spacing as a fraction of the surrounding font's point size.
-    public var extraSpacingPerFontPointFraction: CGFloat
-    /// Checkbox glyph size as a fraction of the line's font height.
-    public var sizeFromFontHeightFactor: CGFloat
-    /// Checkbox glyph size as a fraction of the `[ ]` marker width.
-    public var sizeFromMarkerWidthFactor: CGFloat
-    /// Inset applied inside the checkbox bounding box before drawing the icon.
-    public var iconInsetFraction: CGFloat
-
-    public init(
-        minimumExtraSpacing: CGFloat = 2.0,
-        extraSpacingPerFontPointFraction: CGFloat = 0.18,
-        sizeFromFontHeightFactor: CGFloat = 1.2,
-        sizeFromMarkerWidthFactor: CGFloat = 1.2,
-        iconInsetFraction: CGFloat = 0.01
-    ) {
-        self.minimumExtraSpacing = minimumExtraSpacing
-        self.extraSpacingPerFontPointFraction = extraSpacingPerFontPointFraction
-        self.sizeFromFontHeightFactor = sizeFromFontHeightFactor
-        self.sizeFromMarkerWidthFactor = sizeFromMarkerWidthFactor
-        self.iconInsetFraction = iconInsetFraction
-    }
-
-    public static let `default` = CheckboxStyle()
 }
 
 // MARK: - Blockquote

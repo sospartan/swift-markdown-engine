@@ -56,7 +56,9 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// and block images drawn below text via paragraphSpacing.
     override var renderingSurfaceBounds: CGRect {
         var bounds = super.renderingSurfaceBounds
-        if hasCodeBlockBackground || hasThematicBreak || hasBlockquote {
+        // Task checkboxes too: the box draws left of the first glyph (marker
+        // slot), outside the default text surface — TextKit would clip it.
+        if hasCodeBlockBackground || hasThematicBreak || hasBlockquote || hasTaskCheckbox {
             let containerWidth = textLayoutManager?.textContainer?.size.width ?? bounds.width
             // Extend left to container edge
             bounds.origin.x = -layoutFragmentFrame.origin.x
@@ -178,6 +180,18 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         var found = false
         ts.enumerateAttribute(.blockquoteLevel, in: range, options: []) { value, _, stop in
             if value is Int {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    private var hasTaskCheckbox: Bool {
+        guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return false }
+        var found = false
+        ts.enumerateAttribute(.taskCheckbox, in: range, options: []) { value, _, stop in
+            if value is Bool {
                 found = true
                 stop.pointee = true
             }
@@ -556,14 +570,16 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             let isChecked = (value as? Bool) ?? false
             guard let pos = drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
 
-            let font = (ts.attribute(.font, at: attrRange.location, effectiveRange: nil) as? NSFont)
-                ?? (textLayoutManager?.textContainer?.textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
+            // Box collapsed to 0.1pt, so pos.x sits at the content edge; the
+            // square is right-aligned to it (shared with the click hit-test).
+            // Use baseFont, NOT NSTextView.font — its getter returns the first
+            // char's font (0.1pt in a heading-first doc → 1px boxes).
+            let font = (textLayoutManager?.textContainer?.textView as? NativeTextView)?.baseFont
+                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
             let ascent = max(0, font.ascender)
             let descent = max(0, -font.descender)
-            let fontHeight = max(1, ceil(ascent + descent))
-            let markerWidth = ("[ ]" as NSString).size(withAttributes: [.font: font]).width
-            let size = max(1.0, min(floor(fontHeight * 1.2), floor(markerWidth * 1.2)))
-            let boxX = pos.x + max(0, (markerWidth - size) / 2)
+            let size = TaskCheckboxGeometry.size(for: font)
+            let boxX = TaskCheckboxGeometry.boxX(contentX: pos.x, size: size)
             let centerY = pos.baselineY + (descent - ascent) / 2
             let boxY = centerY - size / 2
 

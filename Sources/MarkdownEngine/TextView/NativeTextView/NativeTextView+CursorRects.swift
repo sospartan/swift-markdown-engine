@@ -13,6 +13,15 @@ extension NativeTextView {
 
     override func mouseMoved(with event: NSEvent) {
         if isInCursorExclusionZone(event) {
+            // Editable+excluded = a panel over the editor (#81): own the arrow.
+            // Read-only+excluded = a full-window overlay (search/transfer) owns
+            // the cursor; stay silent — our tracking areas fire beneath it and
+            // any set here fights the overlay's cursor (flicker).
+            if isEditable { NSCursor.arrow.set() }
+        } else if isEditable, isOverTaskCheckboxBox(event) {
+            // The box is a clickable control, not text. super sets the I-beam
+            // on every move, so setting the arrow after it flickers — skip
+            // super entirely, like the exclusion-zone branch.
             NSCursor.arrow.set()
         } else {
             super.mouseMoved(with: event)
@@ -21,18 +30,22 @@ extension NativeTextView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        super.mouseEntered(with: event)
         if isInCursorExclusionZone(event) {
+            if isEditable { NSCursor.arrow.set() }
+        } else if isEditable, isOverTaskCheckboxBox(event) {
             NSCursor.arrow.set()
         } else {
+            super.mouseEntered(with: event)
             applyReadOnlyCursor(for: event)
         }
     }
 
-    /// True when the mouse is inside an embedder-defined exclusion zone
-    /// (e.g. a formatting toolbar) and edit-mode I-beam should be suppressed.
+    /// True inside an embedder exclusion zone — a panel over the editor or a
+    /// full-window overlay (search/transfer) that owns the cursor. NOT gated on
+    /// `isEditable`: overlays make the editor read-only, and gating let its
+    /// cursor path keep firing beneath them (flicker in search).
     private func isInCursorExclusionZone(_ event: NSEvent) -> Bool {
-        guard isEditable, let excluded = isCursorExcluded else { return false }
+        guard let excluded = isCursorExcluded else { return false }
         return excluded(event.locationInWindow)
     }
 
@@ -46,6 +59,25 @@ extension NativeTextView {
         } else {
             NSCursor.arrow.set()
         }
+    }
+
+    /// True when the pointer is over a drawn task-checkbox square (edit mode
+    /// suppresses the I-beam there — the box is a clickable control, not text;
+    /// read-only mode already shows the arrow via `applyReadOnlyCursor`).
+    private func isOverTaskCheckboxBox(_ event: NSEvent) -> Bool {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let containerPoint = CGPoint(x: viewPoint.x - textContainerOrigin.x,
+                                     y: viewPoint.y - textContainerOrigin.y)
+        // Bound the attribute scan to the hovered line's fragment — a full-
+        // document scan per mouse-move would be O(doc).
+        guard let tlm = textLayoutManager,
+              let tcs = tlm.textContentManager as? NSTextContentStorage,
+              let fragment = tlm.textLayoutFragment(for: containerPoint) else { return false }
+        let start = tcs.offset(from: tcs.documentRange.location, to: fragment.rangeInElement.location)
+        let end = tcs.offset(from: tcs.documentRange.location, to: fragment.rangeInElement.endLocation)
+        guard start != NSNotFound, end > start else { return false }
+        let lineRange = NSRange(location: start, length: end - start)
+        return taskCheckboxHit(at: containerPoint, in: lineRange) != nil
     }
 
     /// True when a clickable `.link` attribute exists under the given point

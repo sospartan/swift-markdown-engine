@@ -187,6 +187,15 @@ extension NativeTextViewCoordinator {
         // Always restyle paragraphs containing latex/imageEmbed tokens to avoid stale raw text.
         let latexParagraphs = (latexTokens + blockLatexTokens + parsed.imageEmbedTokens).map { fullText.paragraphRange(for: $0.range) }
         effectiveParagraphCandidates.append(contentsOf: latexParagraphs)
+        // A table renders as ONE image anchored on the block's FIRST paragraph.
+        // When an edit touches any of its rows (typing in a row, or a paste
+        // that merges into an existing table), the styler re-emits the anchor
+        // against the FULL block — restyling only the edited rows would clip
+        // that anchor away and the table goes blank until a full restyle.
+        let editedTableParagraphs = tokens
+            .filter { $0.kind == .table && NSIntersectionRange($0.range, safeEditedRange).length > 0 }
+            .map { fullText.paragraphRange(for: $0.range) }
+        effectiveParagraphCandidates.append(contentsOf: editedTableParagraphs)
         effectiveParagraphCandidates.append(contentsOf: tokenRestyleParagraphs(
             in: fullText,
             tokens: tokens,

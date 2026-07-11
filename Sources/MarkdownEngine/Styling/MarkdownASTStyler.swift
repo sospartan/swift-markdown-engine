@@ -188,14 +188,27 @@ enum MarkdownASTStyler {
         // 1. Indent paragraph style (hanging indent so wrapped lines align).
         let wsRange = NSRange(location: item.range.location, length: item.marker.location - item.range.location)
         let ws = ctx.ns.substring(with: wsRange)
-        let markerGroup = NSRange(location: item.marker.location,
+        // Revealed while the caret edits the syntax (same test as the early
+        // return below): the raw `- [ ]` stays at full advance.
+        let taskRevealed: Bool = {
+            guard let box = item.checkbox else { return false }
+            let syntax = NSRange(location: item.marker.location, length: NSMaxRange(box) - item.marker.location)
+            return NSLocationInRange(ctx.caret, syntax) || ctx.caret == NSMaxRange(box)
+        }()
+        // Hidden task item shares the bullet geometry: `[ ] ` collapses to ~zero
+        // advance below, so the hanging indent measures only `- ` and task
+        // content aligns with bullet content (the box replaces the bullet slot).
+        let markerGroup: NSRange
+        if let box = item.checkbox, !taskRevealed {
+            markerGroup = NSRange(location: item.marker.location,
+                                  length: box.location - item.marker.location)
+        } else {
+            markerGroup = NSRange(location: item.marker.location,
                                   length: item.contentRange.location - item.marker.location)
+        }
         let markerWidth = (ctx.ns.substring(with: markerGroup) as NSString)
             .size(withAttributes: [.font: ctx.baseFont]).width
         let depthIndent = CGFloat(MarkdownLists.indentLevel(from: ws)) * ctx.config.lists.indentPerLevel
-        let extraSpacing = (item.checkbox != nil && !item.checked)
-            ? HeadingHelpers.checkboxExtraSpacing(font: ctx.baseFont, configuration: ctx.config.checkbox)
-            : 0
         let ps = NSMutableParagraphStyle()
         let lineHeight = ctx.baseLineHeight + ctx.config.lists.extraLineHeight
         ps.minimumLineHeight = lineHeight
@@ -206,17 +219,30 @@ enum MarkdownASTStyler {
         ps.tabStops = []
         ps.defaultTabInterval = ctx.config.lists.indentPerLevel
         ps.firstLineHeadIndent = ctx.config.lists.indentPerLevel
-        ps.headIndent = ctx.config.lists.indentPerLevel + depthIndent + markerWidth + extraSpacing
+        // Wrapped lines hang under the first line's content (indent + marker
+        // width). No checkbox-specific extra: the box is a drawn overlay that
+        // doesn't change text advance, so adding it here (and only here, not to
+        // firstLineHeadIndent) shifted an unchecked task's wrapped lines right
+        // of its first line.
+        ps.headIndent = ctx.config.lists.indentPerLevel + depthIndent + markerWidth
         attrs.append((line, [.paragraphStyle: ps]))
 
         // 2. Marker decoration (suppressed while the caret edits the syntax).
         if let box = item.checkbox {
-            let syntax = NSRange(location: item.marker.location, length: NSMaxRange(box) - item.marker.location)
-            if NSLocationInRange(ctx.caret, syntax) || ctx.caret == NSMaxRange(box) { return }
+            if taskRevealed { return }
             let spacer = NSRange(location: NSMaxRange(item.marker), length: box.location - NSMaxRange(item.marker))
+            // `- ` keeps full advance (the box's slot, like the bullet `•`);
+            // `[ ]` + trailing space collapse to the hidden-marker font so the
+            // content starts at the bullet-content x.
             attrs.append((item.marker, [.foregroundColor: NSColor.clear]))
             if spacer.length > 0 { attrs.append((spacer, [.foregroundColor: NSColor.clear])) }
-            attrs.append((box, [.taskCheckbox: item.checked, .foregroundColor: NSColor.clear]))
+            attrs.append((box, [.taskCheckbox: item.checked, .foregroundColor: NSColor.clear,
+                                .font: ctx.inlineMarkerFont]))
+            let postGap = NSRange(location: NSMaxRange(box),
+                                  length: item.contentRange.location - NSMaxRange(box))
+            if postGap.length > 0 {
+                attrs.append((postGap, [.foregroundColor: NSColor.clear, .font: ctx.inlineMarkerFont]))
+            }
             if item.checked, NSMaxRange(item.range) > NSMaxRange(box) {
                 attrs.append((NSRange(location: NSMaxRange(box), length: NSMaxRange(item.range) - NSMaxRange(box)), [
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,

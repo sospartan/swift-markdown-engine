@@ -12,9 +12,40 @@
 import AppKit
 
 extension NativeTextView {
-    func toggleTaskCheckboxIfHit(event: NSEvent) -> Bool? {
+
+    /// The drawn checkbox square under `containerPoint`, if any.
+    ///
+    /// The `[ ]` chars are collapsed to ~zero width, so their bounding rect sits
+    /// at the content edge; reconstruct the DRAWN square from the shared
+    /// `TaskCheckboxGeometry` (right-aligned to it). `baseFont`, not
+    /// NSTextView.font (see the draw site). `searchRange` bounds the scan —
+    /// the hovered line for cursor checks, nil (whole doc) for clicks.
+    func taskCheckboxHit(at containerPoint: CGPoint, in searchRange: NSRange? = nil) -> (range: NSRange, isChecked: Bool)? {
         guard let textContainer = textContainer,
               let bridge = layoutBridge,
+              let storage = textStorage, storage.length > 0 else { return nil }
+        let boxSize = TaskCheckboxGeometry.size(for: baseFont)
+        let scan = searchRange ?? NSRange(location: 0, length: storage.length)
+        var hit: (range: NSRange, isChecked: Bool)?
+        storage.enumerateAttribute(.taskCheckbox, in: scan, options: []) { value, attrRange, stop in
+            guard let isChecked = value as? Bool else { return }
+            let anchor = bridge.boundingRect(forCharacterRange: attrRange, in: textContainer)
+            let rect = CGRect(
+                x: TaskCheckboxGeometry.boxX(contentX: anchor.minX, size: boxSize),
+                y: anchor.minY,
+                width: boxSize,
+                height: max(anchor.height, boxSize)
+            )
+            if rect.contains(containerPoint) {
+                hit = (attrRange, isChecked)
+                stop.pointee = true
+            }
+        }
+        return hit
+    }
+
+    func toggleTaskCheckboxIfHit(event: NSEvent) -> Bool? {
+        guard let bridge = layoutBridge,
               let storage = textStorage else { return nil }
         let localPoint = convert(event.locationInWindow, from: nil)
         let containerPoint = CGPoint(
@@ -22,21 +53,7 @@ extension NativeTextView {
             y: localPoint.y - textContainerOrigin.y
         )
 
-        // Rect-based hit-test — characterIndex(for:) mis-maps clicks on lines
-        // whose `[ ]` chars are hidden under the bullet/checkbox overlay.
-        let fullRange = NSRange(location: 0, length: storage.length)
-        var hitRange: NSRange? = nil
-        var hitIsChecked = false
-        storage.enumerateAttribute(.taskCheckbox, in: fullRange, options: []) { value, attrRange, stop in
-            guard let isChecked = value as? Bool else { return }
-            let rect = bridge.boundingRect(forCharacterRange: attrRange, in: textContainer)
-            if rect.contains(containerPoint) {
-                hitRange = attrRange
-                hitIsChecked = isChecked
-                stop.pointee = true
-            }
-        }
-        guard let effectiveRange = hitRange else { return nil }
+        guard let (effectiveRange, hitIsChecked) = taskCheckboxHit(at: containerPoint) else { return nil }
 
         let nsText = storage.string as NSString
         let checkboxText = nsText.substring(with: effectiveRange)
