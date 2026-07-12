@@ -53,6 +53,9 @@ public enum MarkdownHTMLRenderer {
         case .thematicBreak:
             return "<hr>"
 
+        case .callout(let type, let title, _, let inlines):
+            return "<div class=\"callout callout-\(type.lowercased())\"><strong>\(escape(title))</strong><br>\(renderInlines(inlines, ns: ns))</div>"
+
         case .blank:
             return nil
         }

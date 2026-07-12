@@ -295,7 +295,6 @@ extension NativeTextView {
         let breakout = configuration.readingWidth != nil
         // Breakout host: the full-width reading-column container, else the text view itself.
         let host: NSView = breakout ? (superview ?? self) : self
-        let viewWidth = host.bounds.width
 
         var seenSourceIDs: Set<Int> = []
         let fullRange = NSRange(location: 0, length: storage.length)
