@@ -73,6 +73,12 @@ final class NativeTextView: NSTextView {
     var wideTableOverlays: [Int: WideTableOverlay] = [:]
     /// Persisted horizontal scroll offset per wide table; survives restyles.
     var tableHorizontalScrollOffsets: [Int: CGFloat] = [:]
+    /// Live table editor views; keyed by token index.
+    var tableEditors: [Int: NSView] = [:]
+    /// Coalesce flag for table editor updates.
+    var pendingTableEditorUpdate = false
+    /// Called when a table editor commits a new Markdown source.
+    var tableEditorCommitHandler: ((NSRange, String) -> Void)?
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()

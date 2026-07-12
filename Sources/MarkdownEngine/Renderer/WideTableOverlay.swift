@@ -49,6 +49,10 @@ final class WideTableOverlay: NSScrollView {
     }
 
     private let tableImageView: WideTableImageView
+    private let leftEdgeShadow = TableEdgeShadowView(edge: .left)
+    private let rightEdgeShadow = TableEdgeShadowView(edge: .right)
+    private let leftBorder = TableFixedSideBorderView()
+    private let rightBorder = TableFixedSideBorderView()
 
     init(sourceID: Int, image: NSImage, ownerTextView: NativeTextView, anchorLocation: Int) {
         self.sourceID = sourceID
@@ -72,7 +76,7 @@ final class WideTableOverlay: NSScrollView {
         let subtleScroller = SubtleScroller()
         subtleScroller.scrollerStyle = .legacy
         horizontalScroller = subtleScroller
-        horizontalScrollElasticity = .allowed
+        horizontalScrollElasticity = .none
         verticalScrollElasticity = .none
         usesPredominantAxisScrolling = true
         horizontalScroller?.controlSize = .small
@@ -81,6 +85,15 @@ final class WideTableOverlay: NSScrollView {
         documentView = tableImageView
         tableImageView.ownerOverlay = self
 
+        clipsToBounds = true
+        for v in [leftBorder, rightBorder, leftEdgeShadow, rightEdgeShadow] {
+            v.wantsLayer = true
+            addSubview(v, positioned: .above, relativeTo: contentView)
+        }
+        leftEdgeShadow.isHidden = true
+        rightEdgeShadow.isHidden = true
+        contentView.postsBoundsChangedNotifications = true
+
         NotificationCenter.default.addObserver(
             self, selector: #selector(scrollOffsetDidChange),
             name: NSScrollView.didLiveScrollNotification, object: self
@@ -88,6 +101,10 @@ final class WideTableOverlay: NSScrollView {
         NotificationCenter.default.addObserver(
             self, selector: #selector(scrollOffsetDidChange),
             name: NSScrollView.didEndLiveScrollNotification, object: self
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(contentBoundsDidChange),
+            name: NSView.boundsDidChangeNotification, object: contentView
         )
     }
 
@@ -103,6 +120,59 @@ final class WideTableOverlay: NSScrollView {
             contentView.scroll(to: NSPoint(x: origin.x, y: 0))
             reflectScrolledClipView(contentView)
         }
+        refreshChrome()
+        for v in [leftBorder, rightBorder, leftEdgeShadow, rightEdgeShadow] {
+            addSubview(v, positioned: .above, relativeTo: contentView)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        refreshChrome()
+    }
+
+    private func refreshChrome() {
+        layoutFixedBorders()
+        layoutEdgeShadows()
+        updateEdgeShadowVisibility()
+    }
+
+    private func layoutFixedBorders() {
+        let bw: CGFloat = 1
+        let b = bounds
+        leftBorder.frame = NSRect(x: 0, y: 0, width: bw, height: b.height)
+        rightBorder.frame = NSRect(x: max(0, b.width - bw), y: 0, width: bw, height: b.height)
+    }
+
+    private func layoutEdgeShadows() {
+        let w = TableEdgeShadowView.width
+        let b = bounds
+        leftEdgeShadow.frame = NSRect(x: 0, y: 0, width: min(w, b.width), height: b.height)
+        rightEdgeShadow.frame = NSRect(
+            x: max(0, b.width - w), y: 0,
+            width: min(w, b.width), height: b.height
+        )
+    }
+
+    private func updateEdgeShadowVisibility() {
+        guard let doc = documentView else {
+            leftEdgeShadow.isHidden = true
+            rightEdgeShadow.isHidden = true
+            return
+        }
+        let x = max(0, contentView.bounds.origin.x)
+        let maxX = max(0, doc.frame.width - contentView.bounds.width)
+        if maxX <= 0.5 {
+            leftEdgeShadow.isHidden = true
+            rightEdgeShadow.isHidden = true
+            return
+        }
+        leftEdgeShadow.isHidden = x <= 0.5
+        rightEdgeShadow.isHidden = x >= maxX - 0.5
+    }
+
+    @objc private func contentBoundsDidChange() {
+        updateEdgeShadowVisibility()
     }
 
     /// Forward everything except clearly-horizontal events to the outer
@@ -136,6 +206,7 @@ final class WideTableOverlay: NSScrollView {
 
     @objc private func scrollOffsetDidChange() {
         ownerTextView?.tableHorizontalScrollOffsets[sourceID] = horizontalOffset
+        updateEdgeShadowVisibility()
     }
 }
 
@@ -199,14 +270,11 @@ extension NativeTextView {
     /// Cheap per-frame overlay reposition on width change (no layout) — keeps tables glued to the text during resize.
     func repositionWideTableOverlaysForWidthChange(insetDelta: CGFloat) {
         guard configuration.readingWidth != nil, !wideTableOverlays.isEmpty else { return }
-        // Overlays live in the full-width reading-column container; use its width.
-        let viewWidth = (superview ?? self).bounds.width
+        // Overlay is the table viewport (reading column); only shift X with the column.
         for (_, overlay) in wideTableOverlays {
             var f = overlay.frame
-            f.origin.x = 0
-            f.size.width = viewWidth
+            f.origin.x = max(0, f.origin.x + insetDelta)
             overlay.frame = f
-            overlay.leftContentInset = max(0, overlay.leftContentInset + insetDelta)
         }
     }
 
@@ -249,6 +317,10 @@ extension NativeTextView {
         storage.enumerateAttribute(.scrollableBlockSourceID, in: fullRange, options: []) { value, attrRange, _ in
             guard let sourceID = value as? Int,
                   let image = storage.attribute(.latexImage, at: attrRange.location, effectiveRange: nil) as? NSImage else { return }
+            // Custom table editor owns the active table; skip the image-only scroll overlay.
+            if storage.attribute(.customTableEditorAnchor, at: attrRange.location, effectiveRange: nil) != nil {
+                return
+            }
             seenSourceIDs.insert(sourceID)
 
             if let start = tcs.location(tcs.documentRange.location, offsetBy: attrRange.location),
@@ -261,15 +333,17 @@ extension NativeTextView {
             guard !anchorRect.isEmpty else { return }
 
             let totalHeight = (storage.attribute(.scrollableBlockTotalHeight, at: attrRange.location, effectiveRange: nil) as? CGFloat) ?? image.size.height
-            // In breakout the overlay lives in the container, so add the column's X
-            // offset and the text view's Y offset (the scroll-away header band).
+            // Host the overlay as the TABLE viewport only (reading-column width), not the
+            // full editor. Edge shadows then naturally sit on the table, not the chrome.
+            // Breakout: still parented to the full-width container, but frame is the column.
             let columnLeft = (breakout ? frame.origin.x : 0) + textContainerOrigin.x + anchorRect.minX
-            let breakoutTop = frame.origin.y + textContainerOrigin.y + anchorRect.minY
-            let overlayFrame: NSRect = breakout
-                ? NSRect(x: 0, y: breakoutTop, width: viewWidth, height: totalHeight)
-                : NSRect(x: columnLeft, y: textContainerOrigin.y + anchorRect.minY, width: containerWidth, height: totalHeight)
-            // Breakout: table starts at the text column's left edge; the left margin is scrollable space.
-            let leftContentInset: CGFloat = breakout ? max(0, columnLeft) : 0
+            let top = (breakout ? frame.origin.y : 0) + textContainerOrigin.y + anchorRect.minY
+            let overlayFrame = NSRect(
+                x: columnLeft,
+                y: top,
+                width: containerWidth,
+                height: totalHeight
+            )
 
             if let existing = wideTableOverlays[sourceID] {
                 if !existing.frame.equalTo(overlayFrame) {
@@ -278,7 +352,7 @@ extension NativeTextView {
                     existing.frame = overlayFrame
                     host.setNeedsDisplay(overlayFrame)
                 }
-                existing.leftContentInset = leftContentInset
+                existing.leftContentInset = 0
                 existing.updateImage(image)
                 existing.anchorTextLocation = attrRange.location
             } else {
@@ -287,7 +361,7 @@ extension NativeTextView {
                     ownerTextView: self, anchorLocation: attrRange.location
                 )
                 overlay.frame = overlayFrame
-                overlay.leftContentInset = leftContentInset
+                overlay.leftContentInset = 0
                 host.addSubview(overlay)
                 wideTableOverlays[sourceID] = overlay
                 let savedOffset = tableHorizontalScrollOffsets[sourceID] ?? 0

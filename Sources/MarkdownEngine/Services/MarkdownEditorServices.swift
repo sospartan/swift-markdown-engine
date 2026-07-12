@@ -304,6 +304,7 @@ public struct MarkdownEditorServices: Sendable {
     public var images: any EmbeddedImageProvider
     public var syntaxHighlighter: any SyntaxHighlighter
     public var latex: any LatexRenderer
+    public var tableDelegate: any MarkdownTableDelegate
     public var bus: MarkdownEditorBus
 
     public init(
@@ -311,12 +312,14 @@ public struct MarkdownEditorServices: Sendable {
         images: any EmbeddedImageProvider = NoOpEmbeddedImageProvider(),
         syntaxHighlighter: any SyntaxHighlighter = PlainTextSyntaxHighlighter(),
         latex: any LatexRenderer = NoOpLatexRenderer(),
+        tableDelegate: any MarkdownTableDelegate = DefaultMarkdownTableDelegate(),
         bus: MarkdownEditorBus = .default
     ) {
         self.wikiLinks = wikiLinks
         self.images = images
         self.syntaxHighlighter = syntaxHighlighter
         self.latex = latex
+        self.tableDelegate = tableDelegate
         self.bus = bus
     }
 

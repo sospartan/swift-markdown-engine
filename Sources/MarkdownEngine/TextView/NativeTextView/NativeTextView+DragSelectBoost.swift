@@ -69,6 +69,14 @@ extension NativeTextView {
             let len = min(preClickSelection.length, max(0, docLen - loc))
             setSelectedRange(NSRange(location: loc, length: len))
         }
+
+        // First click into a custom table: selection restyle creates the editor
+        // only after this modal mouseDown returns, so the click never reaches it.
+        // Sync-create editors now and forward the click into the host editor.
+        if event.clickCount == 1, mods.isEmpty, travel < 2, selectedRange().length == 0 {
+            let local = convert(event.locationInWindow, from: nil)
+            forwardClickToTableEditor(at: local)
+        }
     }
 
     func performDragBoostTick() {

@@ -96,7 +96,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// overlay copy buttons (see ``CodeBlockButton``).
     public var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
     /// Fires after the user toggles any of the three spell/grammar/auto-correction
-    /// menu items. Embedders persist the policy and pass it back via
+    /// menu items. Embedders persist the returned policy (e.g. to `UserDefaults`) and feed it back via
     /// ``MarkdownEditorConfiguration/spellChecking`` on next launch.
     public var onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)?
 
@@ -127,6 +127,10 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// Called on mouse-move with the event location in window coordinates.
     /// Return `true` to show the arrow cursor instead of the I-beam.
     public var isCursorExcluded: ((CGPoint) -> Bool)?
+    /// Push a table (or other block) source replacement into the editor by setting
+    /// this to a non-nil value; the engine applies it on the next update and then
+    /// clears the binding.
+    @Binding public var pendingTableEdit: TableEditRequest?
     /// Called with the current ATX headings whenever the document's heading
     /// structure changes, so embedders can populate a TOC outline.
     public var onHeadingsDidChange: (([DocumentHeading]) -> Void)?
@@ -158,7 +162,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         headerCollapsedHeight: CGFloat = 0,
         headerExpanded: Bool = true,
         retainedScrollDocumentIds: Set<String>? = nil,
-        isCursorExcluded: ((CGPoint) -> Bool)? = nil
+        isCursorExcluded: ((CGPoint) -> Bool)? = nil,
+        pendingTableEdit: Binding<TableEditRequest?> = .constant(nil)
     ) {
         self._text = text
         self._isWikiLinkActive = isWikiLinkActive
@@ -184,6 +189,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.headerExpanded = headerExpanded
         self.retainedScrollDocumentIds = retainedScrollDocumentIds
         self.isCursorExcluded = isCursorExcluded
+        self._pendingTableEdit = pendingTableEdit
     }
 
     public func sizeThatFits(
@@ -321,6 +327,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+
+        textView.tableEditorCommitHandler = { [weak textView, weak coordinator = context.coordinator] range, replacement in
+            guard let textView, let coordinator else { return }
+            let request = TableEditRequest(documentId: coordinator.documentId ?? "", range: range, replacement: replacement)
+            coordinator.applyTableEdit(request, to: textView)
+        }
 
         textView.recalcOverscroll(for: scrollView)
         textView.setPlaceholder(placeholder)
@@ -525,6 +537,18 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             DispatchQueue.main.async {
                 if self.pendingInlineReplacement?.id == pendingInlineReplacement.id {
                     self.pendingInlineReplacement = nil
+                }
+            }
+            return
+        }
+        if let pendingTableEdit {
+            if pendingTableEdit.documentId == documentId,
+               context.coordinator.lastAppliedTableEditID != pendingTableEdit.id {
+                context.coordinator.applyTableEdit(pendingTableEdit, to: textView)
+            }
+            DispatchQueue.main.async {
+                if self.pendingTableEdit?.id == pendingTableEdit.id {
+                    self.pendingTableEdit = nil
                 }
             }
             return

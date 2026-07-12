@@ -84,6 +84,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var wtUndoneDuringSession: Bool = false
     var wtPostUndoSnapshot: String?
     var lastAppliedInlineReplacementID: UUID?
+    var lastAppliedTableEditID: UUID?
     var activeTokenIndices: Set<Int> = []
     var previousActiveTokenIndices: Set<Int> = []
     var wikiLinkMetadata: [WikiLinkService.RangeKey: WikiLinkService.LinkMetadata] = [:]

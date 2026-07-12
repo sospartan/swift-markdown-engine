@@ -105,10 +105,16 @@ extension NativeTextViewCoordinator {
             tlm.ensureLayout(for: tlm.documentRange)
         }
 
-        // Reconcile wide-table overlays after layout settles.
+        // Reconcile overlays after layout settles. Also re-render image tables once:
+        // the sync rebuild may have run before the text container had a real width
+        // (fallback 500), so table images need a second pass at the settled maxWidth.
         if let nativeTextView = textView as? NativeTextView {
+            // Table editors: sync so a same-runloop click-forward can find them.
+            nativeTextView.updateTableEditors()
             DispatchQueue.main.async { [weak nativeTextView] in
+                nativeTextView?.restyleTableParagraphsForWidthChange()
                 nativeTextView?.updateWideTableOverlays()
+                nativeTextView?.updateTableEditors()
             }
         }
     }
@@ -141,10 +147,13 @@ extension NativeTextViewCoordinator {
             precomputedTokens: tokens,
             configuration: configuration
         )
-        // Reconcile wide-table overlays after layout settles.
+        // Sync table editors so first-click-into-table can forward into the host editor
+        // before the mouseDown modal loop fully unwinds.
         if let nativeTextView = textView as? NativeTextView {
+            nativeTextView.updateTableEditors()
             DispatchQueue.main.async { [weak nativeTextView] in
                 nativeTextView?.updateWideTableOverlays()
+                nativeTextView?.updateTableEditors()
             }
         }
     }
@@ -314,5 +323,63 @@ extension NativeTextViewCoordinator {
         }
         textView.window?.makeFirstResponder(textView)
         textView.setSelectedRange(clampedCaret)
+    }
+
+    func applyTableEdit(_ request: TableEditRequest, to textView: NSTextView) {
+        lastAppliedTableEditID = request.id
+
+        let currentText = textView.string as NSString
+        // Prefer the live custom-table anchor range (stale ranges break after prior commits).
+        let range: NSRange = {
+            if let ntv = textView as? NativeTextView,
+               let live = ntv.currentCustomTableEditorRange() {
+                return live
+            }
+            return request.range
+        }()
+        guard range.location != NSNotFound,
+              range.location + range.length <= currentText.length else {
+            return
+        }
+
+        // Keep focus inside an active table editor so cell typing / switch is not aborted.
+        let tableEditorActive: Bool = {
+            guard let ntv = textView as? NativeTextView else { return false }
+            return !ntv.tableEditors.isEmpty
+        }()
+        let previousFirstResponder = textView.window?.firstResponder
+
+        textView.breakUndoCoalescing()
+
+        isProgrammaticEdit = true
+        defer { isProgrammaticEdit = false }
+
+        guard textView.shouldChangeText(in: range, replacementString: request.replacement) else {
+            return
+        }
+
+        textView.textStorage?.replaceCharacters(in: range, with: request.replacement)
+        textView.didChangeText()
+        textView.undoManager?.setActionName("Edit Table")
+        textView.breakUndoCoalescing()
+
+        let replacementLength = (request.replacement as NSString).length
+        // Park caret inside the replacement so the table stays active after restyle.
+        let caretLocation = range.location + min(replacementLength, max(0, replacementLength - 1))
+        let documentLength = (textView.string as NSString).length
+        let clampedCaret = NSRange(location: min(max(caretLocation, 0), max(0, documentLength - 1)), length: 0)
+
+        if let bottomTextView = textView as? NativeTextView {
+            bottomTextView.suppressAutoRevealOnce = true
+        }
+        textView.setSelectedRange(clampedCaret)
+        if tableEditorActive {
+            // Do not steal first responder from the cell editor.
+            if let prev = previousFirstResponder as? NSView, prev.window != nil {
+                textView.window?.makeFirstResponder(prev)
+            }
+        } else {
+            textView.window?.makeFirstResponder(textView)
+        }
     }
 }

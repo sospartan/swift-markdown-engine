@@ -37,6 +37,10 @@ extension NSAttributedString.Key {
     /// Marks the literal `[!TYPE]` marker of a callout so later regex passes
     /// (e.g. incomplete-link highlighting) leave it alone.
     static let calloutMarker = NSAttributedString.Key("CalloutMarker")
+    /// Int — token index of an active table whose host wants a custom editor overlay.
+    static let customTableEditorAnchor = NSAttributedString.Key("MDECustomTableEditorAnchor")
+    /// NSValue(rect: CGRect) — rendered image bounds for table editor positioning.
+    static let customTableEditorImageBounds = NSAttributedString.Key("MDECustomTableEditorImageBounds")
 }
 
 final class CalloutAttribute {
@@ -387,6 +391,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             if ts.attribute(.scrollableBlockNaturalWidth, at: attrRange.location, effectiveRange: nil) != nil {
                 return
             }
+            // Custom table editor owns the visual while active.
+            if ts.attribute(.customTableEditorAnchor, at: attrRange.location, effectiveRange: nil) != nil {
+                return
+            }
             let boundsVal = ts.attribute(.latexBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
             let imageBounds = boundsVal?.rectValue ?? .zero
             let blockOffsetY = ts.attribute(.latexBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
@@ -412,6 +420,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
             // Skip overlay-rendered blocks; WideTableOverlay owns the visual.
             if ts.attribute(.scrollableBlockNaturalWidth, at: attrRange.location, effectiveRange: nil) != nil {
+                return
+            }
+            // Skip while a custom table editor covers this block (avoids double-draw / ghosting).
+            if ts.attribute(.customTableEditorAnchor, at: attrRange.location, effectiveRange: nil) != nil {
                 return
             }
 

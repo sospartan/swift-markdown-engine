@@ -57,6 +57,62 @@ public enum InlinePreviewKey: Sendable {
     case moveUp, moveDown, confirm, confirmAndOpen, cancel
 }
 
+/// Snapshot of a visible GFM table delivered through
+/// ``NativeTextViewWrapper/onTableSelectionChange``.
+public struct TableSelection: Identifiable, Sendable, Equatable {
+    /// Token index used as a stable identity across updates.
+    public let id: Int
+    /// Range of the table source in the display text.
+    public let sourceRange: NSRange
+    /// Bounding rect of the table in the host editor coordinate space.
+    public let rect: CGRect
+    /// Parsed table model.
+    public let table: MarkdownTable
+    /// Whether the caret is currently inside this table.
+    public let isActive: Bool
+
+    public init(id: Int, sourceRange: NSRange, rect: CGRect, table: MarkdownTable, isActive: Bool) {
+        self.id = id
+        self.sourceRange = sourceRange
+        self.rect = rect
+        self.table = table
+        self.isActive = isActive
+    }
+
+    public static func == (lhs: TableSelection, rhs: TableSelection) -> Bool {
+        lhs.id == rhs.id
+            && lhs.sourceRange == rhs.sourceRange
+            && lhs.rect == rhs.rect
+            && lhs.table == rhs.table
+            && lhs.isActive == rhs.isActive
+    }
+}
+
+/// Request to replace a block range (typically a table) with new Markdown source.
+///
+/// Embedders push one of these into ``NativeTextViewWrapper/pendingTableEdit`` to
+/// commit the result of a custom table editor. The engine applies the replacement,
+/// preserves the caret, and clears the binding.
+public struct TableEditRequest: Sendable {
+    /// Stable identifier so the engine can detect already-applied requests
+    /// across SwiftUI re-renders.
+    public let id: UUID
+    /// Document the replacement targets. Ignored if it doesn't match the
+    /// editor's current `documentId` (prevents cross-document writes).
+    public let documentId: String
+    /// Range to replace in the display text.
+    public let range: NSRange
+    /// New Markdown source text.
+    public let replacement: String
+
+    public init(id: UUID = UUID(), documentId: String, range: NSRange, replacement: String) {
+        self.id = id
+        self.documentId = documentId
+        self.range = range
+        self.replacement = replacement
+    }
+}
+
 /// Request to replace an inline token's source with a new storage fragment.
 ///
 /// Embedders push one of these into

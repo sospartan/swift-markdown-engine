@@ -13,17 +13,8 @@ import Foundation
 
 extension MarkdownStyler {
 
-    enum TableAlignment {
-        case left
-        case center
-        case right
-    }
-
-    struct ParsedTable {
-        let header: [String]
-        let alignments: [TableAlignment]
-        let rows: [[String]]
-    }
+    typealias ParsedTable = MarkdownTable
+    typealias TableAlignment = MarkdownTableAlignment
 
     static func styleTables(_ ctx: StylingContext) -> [StyledRange] {
         var attrs: [StyledRange] = []
@@ -42,7 +33,9 @@ extension MarkdownStyler {
             occurrenceByContentHash[contentHash] = occurrenceIndex + 1
 
             let isActive = ctx.activeTokenIndices.contains(idx)
-            if isActive {
+            let useCustom = ctx.services.tableDelegate.shouldUseCustomEditing(
+                for: parsed, range: token.range)
+            if isActive && !useCustom {
                 // Caret inside the table — show editable source, pipes muted like other syntax.
                 let muted = ctx.configuration.theme.mutedText
                 let body = ctx.configuration.theme.bodyText
@@ -62,7 +55,16 @@ extension MarkdownStyler {
             // See renderTable: resolve table colors under the text view's real appearance.
             let renderAppearance = ctx.layoutBridge?.firstTextContainer?.textView?.effectiveAppearance
                 ?? NSApp.effectiveAppearance
-            let image = renderTable(
+            let containerWidthForRender = effectiveContainerWidth(for: ctx)
+            let image = ctx.services.tableDelegate.renderImage(
+                for: parsed,
+                baseFont: ctx.baseFont,
+                theme: ctx.configuration.theme,
+                codeBackgroundColor: ctx.codeBackgroundColor,
+                latex: ctx.services.latex,
+                appearance: renderAppearance,
+                maxWidth: containerWidthForRender
+            ) ?? renderTable(
                 parsed,
                 baseFont: ctx.baseFont,
                 theme: ctx.configuration.theme,
@@ -97,6 +99,23 @@ extension MarkdownStyler {
                 ctx: ctx,
                 attrs: &attrs
             )
+
+            // Stamp full token range on every image table so width-change restyles
+            // can re-render at the settled container width (not only wide/scrollable tables).
+            // Wide mode already stamps this via collapsedSourceScrollable; avoid duplicate work.
+            if !isWide {
+                attrs.append((token.range, [
+                    .scrollableBlockFullRange: NSValue(range: token.range)
+                ]))
+            }
+
+            // Mark the full token range so the engine can find it for editor overlay creation.
+            if useCustom && isActive {
+                attrs.append((token.range, [
+                    .customTableEditorAnchor: idx,
+                    .customTableEditorImageBounds: NSValue(rect: imageBounds)
+                ]))
+            }
         }
         return attrs
     }
