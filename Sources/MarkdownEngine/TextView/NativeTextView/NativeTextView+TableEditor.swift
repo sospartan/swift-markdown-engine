@@ -88,9 +88,14 @@ extension NativeTextView {
             }()
             guard let al = anchorLocation else { return }
 
-            let actualAnchorRect = bridge.boundingRect(
+            // Prefer the full collapsed-source range (same as WideTableOverlay) so
+            // inactive image and active editor share one top-left; single-char
+            // segments can sit a few points lower than the line box used for image draw.
+            let rangeAnchorRect = bridge.boundingRect(forCharacterRange: attrRange, in: container)
+            let charAnchorRect = bridge.boundingRect(
                 forCharacterRange: NSRange(location: al, length: 1), in: container
             )
+            let actualAnchorRect = !rangeAnchorRect.isEmpty ? rangeAnchorRect : charAnchorRect
             guard !actualAnchorRect.isEmpty else { return }
 
             let imageBounds: CGRect
@@ -108,14 +113,35 @@ extension NativeTextView {
             // Always host in a clip view so wide tables never paint past the column.
             let hostWidth = min(contentSize.width, usableContainer)
             let needsHScroll = contentSize.width > usableContainer + 0.5
-            let hostFrame = NSRect(
-                x: textContainerOrigin.x + actualAnchorRect.minX,
-                y: textContainerOrigin.y + actualAnchorRect.minY,
+            // Match WideTableOverlay reserved height (image + scroller strip when wide)
+            // so inactive ↔ active host chrome lines up; document still shows only the grid.
+            let reservedHeight: CGFloat = {
+                if let total = storage.attribute(
+                    .scrollableBlockTotalHeight, at: attrRange.location, effectiveRange: nil
+                ) as? CGFloat, total > contentSize.height {
+                    return total
+                }
+                return contentSize.height
+            }()
+            // Same parent / coordinate space as WideTableOverlay (breakout reading column).
+            let breakout = configuration.readingWidth != nil
+            let hostParent: NSView = breakout ? (superview ?? self) : self
+            let columnLeft = (breakout ? frame.origin.x : 0) + textContainerOrigin.x + actualAnchorRect.minX
+            let top = (breakout ? frame.origin.y : 0) + textContainerOrigin.y + actualAnchorRect.minY
+            var hostFrame = NSRect(
+                x: columnLeft,
+                y: top,
                 width: hostWidth,
-                height: contentSize.height
+                height: reservedHeight
             )
+            // Pixel-align to avoid sub-pixel vertical wobble when swapping image ↔ editor.
+            hostFrame = hostParent.backingAlignedRect(hostFrame, options: [.alignAllEdgesNearest])
 
             if let existing = tableEditors[editorID] {
+                if existing.superview !== hostParent {
+                    existing.removeFromSuperview()
+                    hostParent.addSubview(existing)
+                }
                 applyHostFrame(existing, hostFrame: hostFrame, contentSize: contentSize, needsHScroll: needsHScroll)
                 if let scroll = existing as? TableEditorScrollView {
                     scroll.setEdgeShadowsVisible(needsHScroll)
@@ -138,10 +164,11 @@ extension NativeTextView {
 
             // Always wrap in NSScrollView: clips overflow and provides H-scroll when wide.
             // Vertical scrolling is intentionally disabled — table height is fully reserved.
-            // Document height must equal host height so AppKit never creates a vertical range.
+            // Document height must equal the grid height (not reserved strip) so the grid
+            // stays top-aligned inside a host that may include the scroller strip.
             editorView.frame = NSRect(
                 origin: .zero,
-                size: CGSize(width: contentSize.width, height: hostFrame.height)
+                size: CGSize(width: contentSize.width, height: contentSize.height)
             )
             editorView.autoresizingMask = []
             let scroll = TableEditorScrollView(frame: hostFrame)
@@ -159,7 +186,7 @@ extension NativeTextView {
             scroll.autoresizingMask = []
             scroll.contentView.postsBoundsChangedNotifications = true
             scroll.setEdgeShadowsVisible(needsHScroll)
-            addSubview(scroll)
+            hostParent.addSubview(scroll)
             tableEditors[editorID] = scroll
 
             // Live size updates while typing (row height / wrap) without waiting for commit restyle.
@@ -169,18 +196,19 @@ extension NativeTextView {
                     var hf = scroll.frame
                     let usable = self.layoutBridge?.firstTextContainer?.size.width ?? hf.width
                     hf.size.width = min(newSize.width, usable > 0 ? usable : newSize.width)
-                    hf.size.height = newSize.height
+                    // Keep reserved scroller strip if the host was taller than the grid.
+                    let strip = max(0, hf.height - editorView.frame.height)
+                    hf.size.height = newSize.height + strip
                     scroll.frame = hf
-                    // Keep document height locked to host height (no vertical overscroll).
                     editorView.frame = NSRect(
                         origin: .zero,
-                        size: CGSize(width: newSize.width, height: hf.height)
+                        size: CGSize(width: newSize.width, height: newSize.height)
                     )
-                    self.setNeedsDisplay(hf.insetBy(dx: -2, dy: -2))
+                    scroll.superview?.setNeedsDisplay(hf.insetBy(dx: -2, dy: -2))
                 }
             }
 
-            setNeedsDisplay(hostFrame.insetBy(dx: -2, dy: -2))
+            hostParent.setNeedsDisplay(hostFrame.insetBy(dx: -2, dy: -2))
         }
 
         for (id, editor) in tableEditors where !seenIDs.contains(id) {
@@ -204,33 +232,44 @@ extension NativeTextView {
             scroll.horizontalScrollElasticity = .none
             scroll.verticalScrollElasticity = .none
             if let doc = scroll.documentView {
-                // Prefer live document size if the host editor already grew (typing).
+                // Prefer live document width if the host editor already grew (typing).
                 let live = doc.frame.size
                 let w = max(contentSize.width, live.width)
-                // Keep document height exactly equal to host height so AppKit never
-                // creates a vertical scrollable range / overscroll rubber-band.
-                let h = hostFrame.height
+                // Document height is the grid only; host may be taller (scroller strip).
+                // Keep document top-aligned and lock Y scroll to 0.
+                let h = max(contentSize.height, live.height)
                 let resolved = NSRect(origin: .zero, size: CGSize(width: w, height: h))
                 if !doc.frame.equalTo(resolved) {
                     doc.frame = resolved
                 }
+                let origin = scroll.contentView.bounds.origin
+                if origin.y != 0 {
+                    scroll.contentView.scroll(to: NSPoint(x: origin.x, y: 0))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                }
             }
         }
+        _ = needsHScroll
     }
 
     func removeAllTableEditors() {
         for (_, editor) in tableEditors {
+            let parent = editor.superview
+            let vacated = editor.frame
             editor.removeFromSuperview()
+            parent?.setNeedsDisplay(vacated.insetBy(dx: -2, dy: -2))
         }
         tableEditors.removeAll()
     }
 
     /// Resolve the host editor under a text-view-local point and open a cell.
+    /// Host may be a sibling (breakout reading-column parent), so convert via window.
     func forwardClickToTableEditor(at localPoint: NSPoint) {
         updateTableEditors()
         guard !tableEditors.isEmpty else { return }
+        let windowPoint = convert(localPoint, to: nil)
         for host in tableEditors.values {
-            let inHost = host.convert(localPoint, from: self)
+            let inHost = host.convert(windowPoint, from: nil)
             guard host.bounds.contains(inHost) else { continue }
             if let controlling = host as? MarkdownTableEditorControlling {
                 controlling.beginEditing(at: inHost)

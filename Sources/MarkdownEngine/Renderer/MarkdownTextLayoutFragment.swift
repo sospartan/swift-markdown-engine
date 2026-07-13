@@ -370,6 +370,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             // line geometry intact while pushing the image down by one
             // extra line per wrap.
             yPosition = lastLineMaxY + blockOffsetY - lineHeight
+        } else if imageBounds.height > lineHeight + 0.5 {
+            // Tall collapsed blocks (tables, large figures): top-align to the
+            // line box so inactive image matches active overlay/editor hosts
+            // (which use anchorRect.minY). Vertical centering only applies to
+            // short inline-sized block images.
+            yPosition = firstLineMinY
         } else {
             yPosition = firstLineMinY + (lineHeight - imageBounds.height) / 2
         }

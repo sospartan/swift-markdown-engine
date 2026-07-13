@@ -213,9 +213,12 @@ final class WideTableOverlay: NSScrollView {
 // MARK: - Document view inside the overlay
 
 /// Forwards mouseDown to caret-into-table (so clicking switches to edit mode).
+/// Flipped to match flipped table NSImage bake + active `TableEditorView` (top-left origin).
 final class WideTableImageView: NSImageView {
 
     weak var ownerOverlay: WideTableOverlay?
+
+    override var isFlipped: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
         guard let overlay = ownerOverlay,
@@ -337,12 +340,14 @@ extension NativeTextView {
             // Breakout: still parented to the full-width container, but frame is the column.
             let columnLeft = (breakout ? frame.origin.x : 0) + textContainerOrigin.x + anchorRect.minX
             let top = (breakout ? frame.origin.y : 0) + textContainerOrigin.y + anchorRect.minY
-            let overlayFrame = NSRect(
+            var overlayFrame = NSRect(
                 x: columnLeft,
                 y: top,
                 width: containerWidth,
                 height: totalHeight
             )
+            // Same pixel alignment as TableEditorScrollView host (inactive ↔ active swap).
+            overlayFrame = host.backingAlignedRect(overlayFrame, options: [.alignAllEdgesNearest])
 
             if let existing = wideTableOverlays[sourceID] {
                 if !existing.frame.equalTo(overlayFrame) {
