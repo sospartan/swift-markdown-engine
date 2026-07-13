@@ -109,12 +109,14 @@ extension NativeTextViewCoordinator {
         // the sync rebuild may have run before the text container had a real width
         // (fallback 500), so table images need a second pass at the settled maxWidth.
         if let nativeTextView = textView as? NativeTextView {
-            // Table editors: sync so a same-runloop click-forward can find them.
-            nativeTextView.updateTableEditors()
+            // Sync host swap first so activate/deactivate never shows a blank table frame.
+            nativeTextView.updateTableEditorsNow()
+            nativeTextView.updateWideTableOverlaysNow()
+            // Width settle may re-bake table images; re-reconcile hosts after that pass.
             DispatchQueue.main.async { [weak nativeTextView] in
                 nativeTextView?.restyleTableParagraphsForWidthChange()
-                nativeTextView?.updateWideTableOverlays()
-                nativeTextView?.updateTableEditors()
+                nativeTextView?.updateTableEditorsNow()
+                nativeTextView?.updateWideTableOverlaysNow()
             }
         }
     }
@@ -147,14 +149,11 @@ extension NativeTextViewCoordinator {
             precomputedTokens: tokens,
             configuration: configuration
         )
-        // Sync table editors so first-click-into-table can forward into the host editor
-        // before the mouseDown modal loop fully unwinds.
+        // Sync editor ↔ overlay swap on the same turn so click-in / click-out does not
+        // flash an empty table region (async left a one-frame gap between hosts).
         if let nativeTextView = textView as? NativeTextView {
-            nativeTextView.updateTableEditors()
-            DispatchQueue.main.async { [weak nativeTextView] in
-                nativeTextView?.updateWideTableOverlays()
-                nativeTextView?.updateTableEditors()
-            }
+            nativeTextView.updateTableEditorsNow()
+            nativeTextView.updateWideTableOverlaysNow()
         }
     }
 

@@ -26,6 +26,12 @@ extension NativeTextView {
         }
     }
 
+    /// Force a synchronous reconcile so same-event click-forward can find a host.
+    func updateTableEditorsNow() {
+        pendingTableEditorUpdate = false
+        performTableEditorUpdate()
+    }
+
     /// Full source range of the currently active custom table editor, if any.
     func currentCustomTableEditorRange() -> NSRange? {
         guard let storage = textStorage else { return nil }
@@ -137,15 +143,32 @@ extension NativeTextView {
             // Pixel-align to avoid sub-pixel vertical wobble when swapping image ↔ editor.
             hostFrame = hostParent.backingAlignedRect(hostFrame, options: [.alignAllEdgesNearest])
 
+            // Active editor owns the table; drop the inactive image overlay immediately
+            // so it cannot intercept hit-tests before the async overlay reconcile runs.
+            let sourceID = storage.attribute(
+                .scrollableBlockSourceID, at: attrRange.location, effectiveRange: nil
+            ) as? Int
+            if let sourceID {
+                removeWideTableOverlay(sourceID: sourceID)
+            }
+
             if let existing = tableEditors[editorID] {
                 if existing.superview !== hostParent {
                     existing.removeFromSuperview()
                     hostParent.addSubview(existing)
                 }
-                applyHostFrame(existing, hostFrame: hostFrame, contentSize: contentSize, needsHScroll: needsHScroll)
                 if let scroll = existing as? TableEditorScrollView {
+                    scroll.sourceID = sourceID
+                    scroll.ownerTextView = self
                     scroll.setEdgeShadowsVisible(needsHScroll)
                 }
+                applyHostFrame(
+                    existing,
+                    hostFrame: hostFrame,
+                    contentSize: contentSize,
+                    needsHScroll: needsHScroll,
+                    sourceID: sourceID
+                )
                 return
             }
 
@@ -172,6 +195,8 @@ extension NativeTextView {
             )
             editorView.autoresizingMask = []
             let scroll = TableEditorScrollView(frame: hostFrame)
+            scroll.sourceID = sourceID
+            scroll.ownerTextView = self
             scroll.hasHorizontalScroller = true
             scroll.hasVerticalScroller = false
             scroll.autohidesScrollers = true
@@ -188,11 +213,14 @@ extension NativeTextView {
             scroll.setEdgeShadowsVisible(needsHScroll)
             hostParent.addSubview(scroll)
             tableEditors[editorID] = scroll
+            // Match inactive WideTableOverlay H-offset so enter-edit does not jump to 0.
+            restoreHorizontalOffset(on: scroll, sourceID: sourceID)
 
             // Live size updates while typing (row height / wrap) without waiting for commit restyle.
             if let sizeHost = editorView as? TableEditorSizeReporting {
                 sizeHost.onContentSizeChange = { [weak self, weak scroll, weak editorView] newSize in
                     guard let self, let scroll, let editorView else { return }
+                    let preservedX = scroll.horizontalOffset
                     var hf = scroll.frame
                     let usable = self.layoutBridge?.firstTextContainer?.size.width ?? hf.width
                     hf.size.width = min(newSize.width, usable > 0 ? usable : newSize.width)
@@ -204,6 +232,8 @@ extension NativeTextView {
                         origin: .zero,
                         size: CGSize(width: newSize.width, height: newSize.height)
                     )
+                    // documentView.frame changes can reset clip origin; re-apply H-offset.
+                    scroll.horizontalOffset = preservedX
                     scroll.superview?.setNeedsDisplay(hf.insetBy(dx: -2, dy: -2))
                 }
             }
@@ -211,11 +241,19 @@ extension NativeTextView {
             hostParent.setNeedsDisplay(hostFrame.insetBy(dx: -2, dy: -2))
         }
 
+        var removedAny = false
         for (id, editor) in tableEditors where !seenIDs.contains(id) {
+            flushTableEditorHorizontalOffset(editor)
             let vacated = editor.frame
             editor.removeFromSuperview()
             tableEditors.removeValue(forKey: id)
             setNeedsDisplay(vacated.insetBy(dx: -2, dy: -2))
+            removedAny = true
+        }
+        // Editor teardown leaves a blank hole until the inactive image overlay returns.
+        // Restore overlays in the same turn to avoid a visible flash on click-out.
+        if removedAny {
+            performWideTableOverlayUpdate()
         }
     }
 
@@ -223,7 +261,8 @@ extension NativeTextView {
         _ host: NSView,
         hostFrame: NSRect,
         contentSize: CGSize,
-        needsHScroll: Bool
+        needsHScroll: Bool,
+        sourceID: Int? = nil
     ) {
         if !host.frame.equalTo(hostFrame) {
             host.frame = hostFrame
@@ -242,9 +281,17 @@ extension NativeTextView {
                 if !doc.frame.equalTo(resolved) {
                     doc.frame = resolved
                 }
+                // Prefer persisted H-offset (shared with WideTableOverlay); else keep live X.
+                let liveX = scroll.contentView.bounds.origin.x
+                let desiredX: CGFloat = {
+                    if let sourceID, let saved = tableHorizontalScrollOffsets[sourceID] {
+                        return saved
+                    }
+                    return liveX
+                }()
                 let origin = scroll.contentView.bounds.origin
-                if origin.y != 0 {
-                    scroll.contentView.scroll(to: NSPoint(x: origin.x, y: 0))
+                if abs(origin.x - desiredX) > 0.5 || origin.y != 0 {
+                    scroll.contentView.scroll(to: NSPoint(x: max(0, desiredX), y: 0))
                     scroll.reflectScrolledClipView(scroll.contentView)
                 }
             }
@@ -253,19 +300,53 @@ extension NativeTextView {
     }
 
     func removeAllTableEditors() {
+        pendingTableEditorUpdate = false
+        let hadEditors = !tableEditors.isEmpty
         for (_, editor) in tableEditors {
+            flushTableEditorHorizontalOffset(editor)
             let parent = editor.superview
             let vacated = editor.frame
             editor.removeFromSuperview()
             parent?.setNeedsDisplay(vacated.insetBy(dx: -2, dy: -2))
         }
         tableEditors.removeAll()
+        // Same-turn overlay restore so click-out does not flash an empty table region.
+        if hadEditors {
+            performWideTableOverlayUpdate()
+        }
+    }
+
+    /// Persist current editor H-offset before teardown so inactive overlay can restore it.
+    private func flushTableEditorHorizontalOffset(_ editor: NSView) {
+        guard let scroll = editor as? TableEditorScrollView,
+              let sourceID = scroll.sourceID else { return }
+        tableHorizontalScrollOffsets[sourceID] = scroll.horizontalOffset
+    }
+
+    private func restoreHorizontalOffset(on scroll: TableEditorScrollView, sourceID: Int?) {
+        guard let sourceID else { return }
+        let saved = tableHorizontalScrollOffsets[sourceID] ?? 0
+        if saved > 0 {
+            scroll.horizontalOffset = saved
+        }
+    }
+
+    /// Drop one inactive wide-table image overlay by source ID (active editor owns the table).
+    private func removeWideTableOverlay(sourceID: Int) {
+        guard let overlay = wideTableOverlays.removeValue(forKey: sourceID) else { return }
+        // Flush live offset before teardown so enter-edit restore is accurate.
+        tableHorizontalScrollOffsets[sourceID] = overlay.horizontalOffset
+        let parent = overlay.superview
+        let vacated = overlay.frame
+        overlay.removeFromSuperview()
+        parent?.setNeedsDisplay(vacated.insetBy(dx: -2, dy: -2))
     }
 
     /// Resolve the host editor under a text-view-local point and open a cell.
     /// Host may be a sibling (breakout reading-column parent), so convert via window.
     func forwardClickToTableEditor(at localPoint: NSPoint) {
-        updateTableEditors()
+        // Must be sync: coalesce/async leaves tableEditors empty or stale for this event.
+        updateTableEditorsNow()
         guard !tableEditors.isEmpty else { return }
         let windowPoint = convert(localPoint, to: nil)
         for host in tableEditors.values {
@@ -275,7 +356,8 @@ extension NativeTextView {
                 controlling.beginEditing(at: inHost)
             } else if let scroll = host as? NSScrollView,
                       let doc = scroll.documentView {
-                let inDoc = doc.convert(inHost, from: host)
+                // Window → document respects clip-view H-offset (scroll host path).
+                let inDoc = doc.convert(windowPoint, from: nil)
                 if let controlling = doc as? MarkdownTableEditorControlling {
                     controlling.beginEditing(at: inDoc)
                 }
@@ -298,12 +380,25 @@ public protocol TableEditorSizeReporting: AnyObject {
 /// Owns:
 /// - edge shadows on overflow sides only
 /// - fixed left/right table borders (not part of the scrolling grid document)
+/// - H-offset persistence via `tableHorizontalScrollOffsets` (shared with WideTableOverlay)
 final class TableEditorScrollView: NSScrollView {
+    /// Same key as inactive `WideTableOverlay` / `.scrollableBlockSourceID`.
+    var sourceID: Int?
+    weak var ownerTextView: NativeTextView?
+
     private let leftEdgeShadow = TableEdgeShadowView(edge: .left)
     private let rightEdgeShadow = TableEdgeShadowView(edge: .right)
     private let leftBorder = TableFixedSideBorderView()
     private let rightBorder = TableFixedSideBorderView()
     private var canScrollHorizontally = false
+
+    var horizontalOffset: CGFloat {
+        get { contentView.bounds.origin.x }
+        set {
+            contentView.scroll(to: NSPoint(x: max(0, newValue), y: 0))
+            reflectScrolledClipView(contentView)
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -327,6 +422,14 @@ final class TableEditorScrollView: NSScrollView {
             self, selector: #selector(contentBoundsDidChange),
             name: NSView.boundsDidChangeNotification, object: contentView
         )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollOffsetDidChange),
+            name: NSScrollView.didLiveScrollNotification, object: self
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrollOffsetDidChange),
+            name: NSScrollView.didEndLiveScrollNotification, object: self
+        )
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -336,7 +439,20 @@ final class TableEditorScrollView: NSScrollView {
         refreshChrome()
     }
 
-    @objc private func contentBoundsDidChange() { refreshChrome() }
+    @objc private func contentBoundsDidChange() {
+        persistHorizontalOffset()
+        refreshChrome()
+    }
+
+    @objc private func scrollOffsetDidChange() {
+        persistHorizontalOffset()
+        updateEdgeShadowVisibility()
+    }
+
+    private func persistHorizontalOffset() {
+        guard let sourceID else { return }
+        ownerTextView?.tableHorizontalScrollOffsets[sourceID] = horizontalOffset
+    }
 
     private func refreshChrome() {
         layoutFixedBorders()

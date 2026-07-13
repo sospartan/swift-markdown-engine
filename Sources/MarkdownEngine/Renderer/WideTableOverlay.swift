@@ -232,8 +232,13 @@ final class WideTableImageView: NSImageView {
             super.mouseDown(with: event)
             return
         }
+        // Activate the table (restyle stamps .customTableEditorAnchor + sync-creates editor),
+        // then forward the same click into the host so the cell opens on first press —
+        // mirrors NativeTextView+DragSelectBoost for the narrow-table path.
         textView.window?.makeFirstResponder(textView)
         textView.setSelectedRange(NSRange(location: location, length: 0))
+        let local = textView.convert(event.locationInWindow, from: nil)
+        textView.forwardClickToTableEditor(at: local)
     }
 }
 
@@ -254,6 +259,12 @@ extension NativeTextView {
             self.pendingWideTableOverlayUpdate = false
             self.performWideTableOverlayUpdate()
         }
+    }
+
+    /// Force a synchronous overlay reconcile (pair with `updateTableEditorsNow` on activate/deactivate).
+    func updateWideTableOverlaysNow() {
+        pendingWideTableOverlayUpdate = false
+        performWideTableOverlayUpdate()
     }
 
     /// Cheap per-frame overlay shift when the container moves the text view
@@ -382,6 +393,7 @@ extension NativeTextView {
 
     /// Drop all overlays synchronously (file switch path).
     func removeAllWideTableOverlays() {
+        pendingWideTableOverlayUpdate = false
         for (_, overlay) in wideTableOverlays { overlay.removeFromSuperview() }
         wideTableOverlays.removeAll()
     }
