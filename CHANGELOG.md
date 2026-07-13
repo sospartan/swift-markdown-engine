@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-13
+
 ### Added
 - `MarkdownEditorConfiguration.rawSourceMode`: present the document as raw
   Markdown source — no syntax hiding, no markdown styling, and no wiki-link
@@ -17,8 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediately; the current document's undo stack is dropped on a switch
   because undo actions recorded against the other mode's display text would
   replay at stale ranges. Default `false` — existing embedders are unaffected.
+- Find & replace: two optional bus notifications, `replaceCurrent` (replace the
+  focused match and advance) and `replaceAll` (replace every match in one undo
+  step, back-to-front so ranges stay valid). Both edit the engine's displayed
+  text with proper `shouldChangeText`/`didChangeText` undo registration and
+  report the remaining count via `findResults`. Purely additive — embedders that
+  don't set the bus names are unaffected.
+- Clean clipboard: ⌘C copies the selection as rich text (RTF + `com.apple.webarchive`)
+  built from the AST rather than the raw storage form, and paste converts HTML to
+  Markdown. Wiki-link `[[Name|UUID]]` side-channels no longer leak into copied text.
 
 ### Fixed
+- Find/jump scroll now works without a reading column. The TextKit 2
+  fragment-enumeration scroll path (with `.ensuresLayout`) runs universally
+  instead of only when `readingWidth` was set; the unreliable
+  `NSTextView.scrollRangeToVisible` (which routes through the absent TextKit 1
+  layout manager for off-screen content) is now only the last-resort fallback.
 - Inline syntax markers (`**`, `*`, `~~`, `==`) now use `mutedText` foreground
   color while the caret is inside the corresponding span, matching the existing
   behavior of inline code backticks and link/wiki-link brackets. This makes
@@ -34,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   competing `.link` attribute on top of the link — making the raw URL independently
   navigable and offsetting the click edit zone. Bare URLs outside links still
   autolink; URLs inside code were already excluded.
+- Wiki links: UUID-robust labels/embeds and keyboard navigation in the inline
+  autocomplete list.
+
+### Contributors
+- Find/jump scroll fix and find & replace by @ChristineTham
+- Inline syntax-marker color fix by @sospartan
+- rawSourceMode, clean clipboard, web-link edit zone, and wiki-link robustness by @luca-chen198
 
 ## [0.8.0] - 2026-06-28
 
