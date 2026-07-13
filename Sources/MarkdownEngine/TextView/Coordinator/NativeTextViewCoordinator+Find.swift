@@ -85,15 +85,18 @@ extension NativeTextViewCoordinator {
         guard allRanges.indices.contains(currentIndex) else { return }
         let range = allRanges[currentIndex]
         guard range.location + range.length <= fullRange.length else { return }
-        // Default (text view IS documentView): native reveal — unchanged for non-readingWidth embedders.
-        guard configuration.readingWidth != nil,
-              let tlm = tv.textLayoutManager,
+        // Scroll via TextKit 2 fragment layout, which works whether or not the
+        // reading column is active. `scrollRangeToVisible` is unreliable for
+        // off-screen content in a TextKit 2 text view (it routes through the
+        // absent TextKit 1 layout manager), so it's only the last-resort fallback.
+        // When the text view IS the document view, `tv.frame.origin.y` is 0 and
+        // the offset below is a no-op, so the same math serves both layouts.
+        guard let tlm = tv.textLayoutManager,
               let scrollView = tv.enclosingScrollView,
               let matchStart = tlm.textContentManager?.location(tlm.documentRange.location, offsetBy: range.location) else {
             tv.scrollRangeToVisible(range)
             return
         }
-        // Reading column: text view is a centered subview of the container — scroll the clip explicitly.
         tlm.enumerateTextLayoutFragments(from: matchStart, options: [.ensuresLayout]) { fragment in
             let cv = scrollView.contentView
             let insetsTop = scrollView.contentInsets.top
