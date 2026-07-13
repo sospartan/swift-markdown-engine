@@ -80,6 +80,12 @@ final class NativeTextView: NSTextView {
     /// Called when a table editor commits a new Markdown source.
     var tableEditorCommitHandler: ((NSRange, String) -> Void)?
 
+    // MARK: Inactive table overlay state
+    /// Live host-provided overlay views for inactive custom tables; keyed by token index.
+    var inactiveTableOverlays: [Int: NSView] = [:]
+    /// Coalesce flag for inactive table overlay updates.
+    var pendingInactiveTableOverlayUpdate = false
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         // Forward appearance changes to the embedder's highlighter via its registered notification.

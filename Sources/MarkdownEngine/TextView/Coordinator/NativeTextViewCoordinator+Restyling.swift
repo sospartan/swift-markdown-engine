@@ -112,11 +112,13 @@ extension NativeTextViewCoordinator {
             // Sync host swap first so activate/deactivate never shows a blank table frame.
             nativeTextView.updateTableEditorsNow()
             nativeTextView.updateWideTableOverlaysNow()
+            nativeTextView.updateInactiveTableOverlaysNow()
             // Width settle may re-bake table images; re-reconcile hosts after that pass.
             DispatchQueue.main.async { [weak nativeTextView] in
                 nativeTextView?.restyleTableParagraphsForWidthChange()
                 nativeTextView?.updateTableEditorsNow()
                 nativeTextView?.updateWideTableOverlaysNow()
+                nativeTextView?.updateInactiveTableOverlaysNow()
             }
         }
     }
@@ -154,6 +156,7 @@ extension NativeTextViewCoordinator {
         if let nativeTextView = textView as? NativeTextView {
             nativeTextView.updateTableEditorsNow()
             nativeTextView.updateWideTableOverlaysNow()
+            nativeTextView.updateInactiveTableOverlaysNow()
         }
     }
 

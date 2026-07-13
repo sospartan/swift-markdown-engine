@@ -41,6 +41,11 @@ extension NSAttributedString.Key {
     static let customTableEditorAnchor = NSAttributedString.Key("MDECustomTableEditorAnchor")
     /// NSValue(rect: CGRect) — rendered image bounds for table editor positioning.
     static let customTableEditorImageBounds = NSAttributedString.Key("MDECustomTableEditorImageBounds")
+    /// Int — token index of an inactive table whose host wants a custom overlay view.
+    static let inactiveTableOverlayAnchor = NSAttributedString.Key("MDEInactiveTableOverlayAnchor")
+    /// String — the original Markdown table source, stored so reconcile can parse it
+    /// even after the collapsed-source block replaces the text in storage.
+    static let inactiveTableSourceText = NSAttributedString.Key("MDEInactiveTableSourceText")
 }
 
 final class CalloutAttribute {

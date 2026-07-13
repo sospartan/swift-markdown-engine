@@ -51,6 +51,27 @@ public protocol MarkdownTableDelegate: Sendable {
         baseFont: NSFont,
         commit: @escaping (String) -> Void
     ) -> NSView?
+
+    /// Create an overlay view for an inactive table. The engine adds the returned
+    /// view to the text view hierarchy, positions it at the table's bounding rect,
+    /// and keeps the frame in sync during scroll and resize.
+    ///
+    /// The overlay is only created for tables where `shouldUseCustomEditing` is
+    /// `true` and the caret is outside the table. Call `activate` to move the
+    /// caret into the table and switch to the active editor. Call `commit` with
+    /// serialized Markdown source to replace the table without activating it.
+    ///
+    /// Return `nil` to keep the historical image-only behavior.
+    @MainActor
+    func makeInactiveOverlayView(
+        for table: MarkdownTable,
+        range: NSRange,
+        textView: NSTextView,
+        image: NSImage,
+        sourceID: Int,
+        activate: @escaping () -> Void,
+        commit: @escaping (String) -> Void
+    ) -> NSView?
 }
 
 public extension MarkdownTableDelegate {
@@ -69,6 +90,16 @@ public extension MarkdownTableDelegate {
         range: NSRange,
         textView: NSTextView,
         baseFont: NSFont,
+        commit: @escaping (String) -> Void
+    ) -> NSView? { nil }
+    @MainActor
+    func makeInactiveOverlayView(
+        for table: MarkdownTable,
+        range: NSRange,
+        textView: NSTextView,
+        image: NSImage,
+        sourceID: Int,
+        activate: @escaping () -> Void,
         commit: @escaping (String) -> Void
     ) -> NSView? { nil }
 }

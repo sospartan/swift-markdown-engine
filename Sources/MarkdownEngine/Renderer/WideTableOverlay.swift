@@ -35,6 +35,7 @@ final class WideTableOverlay: NSScrollView {
     private let rightEdgeShadow = TableEdgeShadowView(edge: .right)
     private let leftBorder = TableFixedSideBorderView()
     private let rightBorder = TableFixedSideBorderView()
+    private var embedderOverlayView: NSView?
 
     init(sourceID: Int, image: NSImage, ownerTextView: NativeTextView, anchorLocation: Int) {
         self.sourceID = sourceID
@@ -187,6 +188,19 @@ final class WideTableOverlay: NSScrollView {
         ownerTextView?.tableHorizontalScrollOffsets[sourceID] = horizontalOffset
         updateEdgeShadowVisibility()
     }
+
+    /// Mount a host-provided overlay view (e.g. hover 3-dots menu) over the full
+    /// table image so per-cell hover works even when scrolled. Pass `nil` to remove.
+    func setEmbedderOverlayView(_ view: NSView?) {
+        embedderOverlayView?.removeFromSuperview()
+        embedderOverlayView = view
+        guard let view else { return }
+        view.frame = tableImageView.bounds
+        view.autoresizingMask = [.width, .height]
+        tableImageView.addSubview(view)
+    }
+
+    var hasEmbedderOverlay: Bool { embedderOverlayView != nil }
 }
 
 // MARK: - Document view inside the overlay
@@ -288,6 +302,7 @@ extension NativeTextView {
         let breakout = configuration.readingWidth != nil
         // Breakout host: the full-width reading-column container, else the text view itself.
         let host: NSView = breakout ? (superview ?? self) : self
+        let delegate = configuration.services.tableDelegate
 
         var seenSourceIDs: Set<Int> = []
         let fullRange = NSRange(location: 0, length: storage.length)
@@ -309,7 +324,6 @@ extension NativeTextView {
         storage.enumerateAttribute(.scrollableBlockSourceID, in: fullRange, options: []) { value, attrRange, _ in
             guard let sourceID = value as? Int,
                   let image = storage.attribute(.latexImage, at: attrRange.location, effectiveRange: nil) as? NSImage else { return }
-            // Custom table editor owns the active table; skip the image-only scroll overlay.
             if storage.attribute(.customTableEditorAnchor, at: attrRange.location, effectiveRange: nil) != nil {
                 return
             }
@@ -339,6 +353,16 @@ extension NativeTextView {
             // Same pixel alignment as TableEditorScrollView host (inactive ↔ active swap).
             overlayFrame = host.backingAlignedRect(overlayFrame, options: [.alignAllEdgesNearest])
 
+            let activateClosure: () -> Void = { [weak self] in
+                guard let self else { return }
+                self.window?.makeFirstResponder(self)
+                self.setSelectedRange(NSRange(location: attrRange.location, length: 0))
+            }
+            let commitClosure: (String) -> Void = { [weak self] replacement in
+                guard let self, let handler = self.tableEditorCommitHandler else { return }
+                handler(attrRange, replacement)
+            }
+
             if let existing = wideTableOverlays[sourceID] {
                 if !existing.frame.equalTo(overlayFrame) {
                     // Invalidate both old + new region so the vacated area redraws.
@@ -349,6 +373,22 @@ extension NativeTextView {
                 existing.leftContentInset = 0
                 existing.updateImage(image)
                 existing.anchorTextLocation = attrRange.location
+
+                if !existing.hasEmbedderOverlay {
+                    if let sourceText = storage.attribute(.inactiveTableSourceText, at: attrRange.location, effectiveRange: nil) as? String,
+                       let parsed = MarkdownTableParser.parse(sourceText),
+                       let embedderView = delegate.makeInactiveOverlayView(
+                           for: parsed,
+                           range: attrRange,
+                           textView: self,
+                           image: image,
+                           sourceID: sourceID,
+                           activate: activateClosure,
+                           commit: commitClosure
+                       ) {
+                        existing.setEmbedderOverlayView(embedderView)
+                    }
+                }
             } else {
                 let overlay = WideTableOverlay(
                     sourceID: sourceID, image: image,
@@ -360,6 +400,20 @@ extension NativeTextView {
                 wideTableOverlays[sourceID] = overlay
                 let savedOffset = tableHorizontalScrollOffsets[sourceID] ?? 0
                 if savedOffset > 0 { overlay.horizontalOffset = savedOffset }
+
+                if let sourceText = storage.attribute(.inactiveTableSourceText, at: attrRange.location, effectiveRange: nil) as? String,
+                   let parsed = MarkdownTableParser.parse(sourceText),
+                   let embedderView = delegate.makeInactiveOverlayView(
+                       for: parsed,
+                       range: attrRange,
+                       textView: self,
+                       image: image,
+                       sourceID: sourceID,
+                       activate: activateClosure,
+                       commit: commitClosure
+                   ) {
+                    overlay.setEmbedderOverlayView(embedderView)
+                }
             }
         }
 

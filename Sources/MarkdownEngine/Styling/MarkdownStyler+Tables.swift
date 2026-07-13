@@ -116,6 +116,15 @@ extension MarkdownStyler {
                     .customTableEditorImageBounds: NSValue(rect: imageBounds)
                 ]))
             }
+
+            // Mark inactive custom tables so the engine can mount a host overlay view.
+            if useCustom && !isActive {
+                attrs.append((token.range, [
+                    .inactiveTableOverlayAnchor: idx,
+                    .customTableEditorImageBounds: NSValue(rect: imageBounds),
+                    .inactiveTableSourceText: source
+                ]))
+            }
         }
         return attrs
     }

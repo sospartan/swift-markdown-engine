@@ -268,6 +268,7 @@ extension NativeTextView {
                 guard let self = self else { return }
                 self.restyleTableParagraphsForWidthChange()
                 self.updateWideTableOverlays()
+                self.updateInactiveTableOverlays()
             }
         }
     }

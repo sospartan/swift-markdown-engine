@@ -150,6 +150,7 @@ extension NativeTextView {
             if let sourceID {
                 removeWideTableOverlay(sourceID: sourceID)
             }
+            removeInactiveTableOverlay(overlayID: editorID)
 
             if let existing = tableEditors[editorID] {
                 if existing.superview !== hostParent {
@@ -310,6 +311,7 @@ extension NativeTextView {
         // Same-turn overlay restore so click-out does not flash an empty table region.
         if hadEditors {
             performWideTableOverlayUpdate()
+            performInactiveTableOverlayUpdate()
         }
     }
 
