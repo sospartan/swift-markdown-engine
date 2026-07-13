@@ -28,7 +28,7 @@ extension NSAttributedString.Key {
     static let scrollableBlockNaturalWidth = NSAttributedString.Key("ScrollableBlockNaturalWidth")
     /// Int — hash of source text; key for overlay reconcile + offset persistence.
     static let scrollableBlockSourceID = NSAttributedString.Key("ScrollableBlockSourceID")
-    /// CGFloat — total reserved height (image + scroller strip) for overlay sizing.
+    /// CGFloat — reserved overlay height (table image height; scroller floats over content).
     static let scrollableBlockTotalHeight = NSAttributedString.Key("ScrollableBlockTotalHeight")
     /// NSValue(range:) — full multi-line range of the wide-table source, used to scope width-change restyles.
     static let scrollableBlockFullRange = NSAttributedString.Key("ScrollableBlockFullRange")
@@ -67,9 +67,6 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// shared so the styler's text indent and the painted bars line up.
     static let blockquoteIndentPerLevel: CGFloat = 18
     static let blockquoteBarWidth: CGFloat = 3
-
-    /// Strip below an overlay block for the legacy-small scroller (~11pt) + buffer.
-    static let scrollableBlockScrollerStrip: CGFloat = 14
 
     // MARK: - FB15131180
 

@@ -9,24 +9,6 @@
 
 import AppKit
 
-// MARK: - Faint scroller
-
-/// Legacy scroller with a fainter knob.
-final class SubtleScroller: NSScroller {
-    override func drawKnobSlot(in slot: NSRect, highlight: Bool) {
-        // Transparent track — only the knob is drawn.
-    }
-
-    override func drawKnob() {
-        let knob = rect(for: .knob)
-        guard knob.width > 1, knob.height > 1 else { return }
-        let thickness: CGFloat = 5
-        let pill = knob.insetBy(dx: 2, dy: max(0, (knob.height - thickness) / 2))
-        NSColor.secondaryLabelColor.withAlphaComponent(0.3).setFill()   // ← faintness; tweak here
-        NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
-    }
-}
-
 // MARK: - Overlay view
 
 final class WideTableOverlay: NSScrollView {
@@ -71,15 +53,12 @@ final class WideTableOverlay: NSScrollView {
         autohidesScrollers = true
         borderType = .noBorder
         drawsBackground = false
-        // Legacy scroller, fainter knob (see SubtleScroller).
-        scrollerStyle = .legacy
-        let subtleScroller = SubtleScroller()
-        subtleScroller.scrollerStyle = .legacy
-        horizontalScroller = subtleScroller
+        backgroundColor = .clear
+        // Same overlay scroller as TableEditorScrollView (floats over last row).
+        scrollerStyle = .overlay
         horizontalScrollElasticity = .none
         verticalScrollElasticity = .none
         usesPredominantAxisScrolling = true
-        horizontalScroller?.controlSize = .small
         automaticallyAdjustsContentInsets = false
 
         documentView = tableImageView

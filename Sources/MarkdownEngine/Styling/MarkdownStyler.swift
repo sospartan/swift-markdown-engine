@@ -112,7 +112,8 @@ extension MarkdownStyler {
     enum RenderedStandaloneBlockMode {
         case collapsedSource(markerTexts: [String])
         case visibleSource(imageGap: CGFloat)
-        /// Wide-table mode: anchor reserves container width, line gains scroller strip, tagged by sourceID.
+        /// Wide-table mode: anchor reserves container width, tagged by sourceID.
+        /// Horizontal scroller floats over content (no extra strip).
         case collapsedSourceScrollable(
             markerTexts: [String],
             displayWidth: CGFloat,
@@ -158,8 +159,6 @@ extension MarkdownStyler {
             )
 
         case .collapsedSourceScrollable(let markerTexts, let displayWidth, let sourceID):
-            let scrollerStrip = MarkdownTextLayoutFragment.scrollableBlockScrollerStrip
-            let totalHeight = imageBounds.height + scrollerStrip
             emitCollapsedAttrs(
                 token: token,
                 rawContent: rawContent,
@@ -169,11 +168,11 @@ extension MarkdownStyler {
                 para: para,
                 paraRange: paraRange,
                 advanceWidth: displayWidth,
-                neededLineHeight: totalHeight,
+                neededLineHeight: imageBounds.height,
                 extraAnchorAttrs: [
                     .scrollableBlockNaturalWidth: imageBounds.width,
                     .scrollableBlockSourceID: sourceID,
-                    .scrollableBlockTotalHeight: totalHeight,
+                    .scrollableBlockTotalHeight: imageBounds.height,
                     .scrollableBlockFullRange: NSValue(range: paraRange)
                 ],
                 markerTexts: markerTexts,

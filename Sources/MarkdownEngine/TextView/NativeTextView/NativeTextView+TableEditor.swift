@@ -119,8 +119,7 @@ extension NativeTextView {
             // Always host in a clip view so wide tables never paint past the column.
             let hostWidth = min(contentSize.width, usableContainer)
             let needsHScroll = contentSize.width > usableContainer + 0.5
-            // Match WideTableOverlay reserved height (image + scroller strip when wide)
-            // so inactive ↔ active host chrome lines up; document still shows only the grid.
+            // Match WideTableOverlay reserved height so inactive ↔ active hosts line up.
             let reservedHeight: CGFloat = {
                 if let total = storage.attribute(
                     .scrollableBlockTotalHeight, at: attrRange.location, effectiveRange: nil
@@ -187,8 +186,7 @@ extension NativeTextView {
 
             // Always wrap in NSScrollView: clips overflow and provides H-scroll when wide.
             // Vertical scrolling is intentionally disabled — table height is fully reserved.
-            // Document height must equal the grid height (not reserved strip) so the grid
-            // stays top-aligned inside a host that may include the scroller strip.
+            // Overlay scroller floats over content; document height equals the grid height.
             editorView.frame = NSRect(
                 origin: .zero,
                 size: CGSize(width: contentSize.width, height: contentSize.height)
@@ -224,7 +222,7 @@ extension NativeTextView {
                     var hf = scroll.frame
                     let usable = self.layoutBridge?.firstTextContainer?.size.width ?? hf.width
                     hf.size.width = min(newSize.width, usable > 0 ? usable : newSize.width)
-                    // Keep reserved scroller strip if the host was taller than the grid.
+                    // Preserve any extra host height beyond the previous grid (if any).
                     let strip = max(0, hf.height - editorView.frame.height)
                     hf.size.height = newSize.height + strip
                     scroll.frame = hf
@@ -274,8 +272,7 @@ extension NativeTextView {
                 // Prefer live document width if the host editor already grew (typing).
                 let live = doc.frame.size
                 let w = max(contentSize.width, live.width)
-                // Document height is the grid only; host may be taller (scroller strip).
-                // Keep document top-aligned and lock Y scroll to 0.
+                // Document height is the grid only. Keep top-aligned and lock Y scroll to 0.
                 let h = max(contentSize.height, live.height)
                 let resolved = NSRect(origin: .zero, size: CGSize(width: w, height: h))
                 if !doc.frame.equalTo(resolved) {
