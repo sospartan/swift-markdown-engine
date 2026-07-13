@@ -34,26 +34,98 @@ extension NativeTextViewCoordinator {
               let query = info["query"] as? String else { return }
         let requestedIndex = info["currentIndex"] as? Int ?? 0
 
-        var allRanges: [NSRange] = []
-        if !query.isEmpty {
-            let haystack = tv.string as NSString
-            let opts: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
-            var searchStart = 0
-            while searchStart < haystack.length {
-                let scope = NSRange(location: searchStart, length: haystack.length - searchStart)
-                let found = haystack.range(of: query, options: opts, range: scope)
-                if found.location == NSNotFound { break }
-                allRanges.append(found)
-                searchStart = found.location + max(found.length, 1)
-            }
-        }
-
+        let allRanges = findMatches(of: query, in: tv.string as NSString)
         let currentIndex = allRanges.isEmpty ? 0 : min(max(requestedIndex, 0), allRanges.count - 1)
         renderFindMatches(allRanges, currentIndex: currentIndex)
+        postFindResults(count: allRanges.count)
+    }
 
-        if let resultsName = configuration.services.bus.findResults {
-            NotificationCenter.default.post(name: resultsName, object: nil, userInfo: ["count": allRanges.count])
+    /// All ranges of `query` in `haystack` (display coordinates), case- and
+    /// diacritic-insensitive. Shared by find and replace.
+    func findMatches(of query: String, in haystack: NSString) -> [NSRange] {
+        guard !query.isEmpty else { return [] }
+        var ranges: [NSRange] = []
+        let opts: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        var searchStart = 0
+        while searchStart < haystack.length {
+            let scope = NSRange(location: searchStart, length: haystack.length - searchStart)
+            let found = haystack.range(of: query, options: opts, range: scope)
+            if found.location == NSNotFound { break }
+            ranges.append(found)
+            searchStart = found.location + max(found.length, 1)
         }
+        return ranges
+    }
+
+    private func postFindResults(count: Int) {
+        if let resultsName = configuration.services.bus.findResults {
+            NotificationCenter.default.post(name: resultsName, object: nil, userInfo: ["count": count])
+        }
+    }
+
+    /// Replace the current find match with the replacement string (one undo
+    /// step), then re-highlight and report the remaining match count.
+    @objc func handleReplaceCurrent(_ notification: Notification) {
+        guard let tv = textView, tv.isEditable,
+              let info = notification.userInfo,
+              let query = info["query"] as? String, !query.isEmpty,
+              let replacement = info["replacement"] as? String else { return }
+        let requestedIndex = info["currentIndex"] as? Int ?? 0
+
+        let matches = findMatches(of: query, in: tv.string as NSString)
+        guard !matches.isEmpty else { postFindResults(count: 0); return }
+        let idx = min(max(requestedIndex, 0), matches.count - 1)
+        let target = matches[idx]
+        guard NSMaxRange(target) <= (tv.string as NSString).length else { return }
+
+        tv.breakUndoCoalescing()
+        isProgrammaticEdit = true
+        defer { isProgrammaticEdit = false }
+        guard tv.shouldChangeText(in: target, replacementString: replacement) else { return }
+        tv.textStorage?.replaceCharacters(in: target, with: replacement)
+        tv.didChangeText()
+        tv.undoManager?.setActionName("Replace")
+        tv.breakUndoCoalescing()
+
+        // Re-find on the edited text; keep the index so focus lands on the next
+        // occurrence (or clamps to the last remaining one).
+        let updated = findMatches(of: query, in: tv.string as NSString)
+        let nextIndex = updated.isEmpty ? 0 : min(idx, updated.count - 1)
+        renderFindMatches(updated, currentIndex: nextIndex)
+        postFindResults(count: updated.count)
+    }
+
+    /// Replace every find match in a single undo step, then re-highlight.
+    @objc func handleReplaceAll(_ notification: Notification) {
+        guard let tv = textView, tv.isEditable,
+              let info = notification.userInfo,
+              let query = info["query"] as? String, !query.isEmpty,
+              let replacement = info["replacement"] as? String else { return }
+
+        let matches = findMatches(of: query, in: tv.string as NSString)
+        guard !matches.isEmpty else { postFindResults(count: 0); return }
+
+        // Group as one undo; edit back-to-front so earlier ranges stay valid.
+        let orderedRanges = matches.reversed().map { NSValue(range: $0) }
+        let replacements = Array(repeating: replacement, count: matches.count)
+
+        tv.breakUndoCoalescing()
+        isProgrammaticEdit = true
+        defer { isProgrammaticEdit = false }
+        guard tv.shouldChangeText(inRanges: orderedRanges, replacementStrings: replacements) else { return }
+        tv.textStorage?.beginEditing()
+        for match in matches.reversed() {
+            tv.textStorage?.replaceCharacters(in: match, with: replacement)
+        }
+        tv.textStorage?.endEditing()
+        tv.didChangeText()
+        tv.undoManager?.setActionName("Replace All")
+        tv.breakUndoCoalescing()
+
+        // Usually zero remain; non-zero only if the replacement contains the query.
+        let remaining = findMatches(of: query, in: tv.string as NSString)
+        renderFindMatches(remaining, currentIndex: 0)
+        postFindResults(count: remaining.count)
     }
 
     /// Highlight all matches (current one stronger) and scroll the current match into view.

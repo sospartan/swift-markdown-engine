@@ -244,6 +244,17 @@ public struct MarkdownEditorBus: Sendable {
     /// Posted by the engine in response to `findQuery` with `userInfo["count"] as? Int`
     /// (number of matches in the displayed text), so the host can show "x of y".
     public var findResults: Notification.Name?
+    /// Posted by the host UI to replace the current find match. Expected
+    /// `userInfo["query"] as? String`, `userInfo["replacement"] as? String`,
+    /// optional `userInfo["currentIndex"] as? Int`. The engine edits its own
+    /// displayed text (with undo), re-highlights the remaining matches, and
+    /// posts `findResults` with the new count.
+    public var replaceCurrent: Notification.Name?
+    /// Posted by the host UI to replace every find match in one undo step.
+    /// Expected `userInfo["query"] as? String`, `userInfo["replacement"] as? String`.
+    /// The engine posts `findResults` with the count still matching afterward
+    /// (non-zero only if the replacement itself contains the query).
+    public var replaceAll: Notification.Name?
 
     public init(
         applyBoldRequest: Notification.Name? = nil,
@@ -265,7 +276,9 @@ public struct MarkdownEditorBus: Sendable {
         findScrollToRange: Notification.Name? = nil,
         findClearHighlights: Notification.Name? = nil,
         findQuery: Notification.Name? = nil,
-        findResults: Notification.Name? = nil
+        findResults: Notification.Name? = nil,
+        replaceCurrent: Notification.Name? = nil,
+        replaceAll: Notification.Name? = nil
     ) {
         self.applyBoldRequest = applyBoldRequest
         self.applyItalicRequest = applyItalicRequest
@@ -287,6 +300,8 @@ public struct MarkdownEditorBus: Sendable {
         self.findClearHighlights = findClearHighlights
         self.findQuery = findQuery
         self.findResults = findResults
+        self.replaceCurrent = replaceCurrent
+        self.replaceAll = replaceAll
     }
 
     public static let `default` = MarkdownEditorBus()
