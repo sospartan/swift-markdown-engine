@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-15
+
 ### Added
 - **Extension seam**: opt-in constructs beyond pure markdown. A
   `MarkdownExtension` contributes an inline form (`==highlight==`), a fenced
@@ -29,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The formatting actions (context menu, `applyHighlightRequest` /
   `applyStrikethroughRequest`) still insert/remove the markers either way;
   construct detection (toggle-off, selection state) requires the extension.
+
+### Fixed
+- A pre-existing incremental-parse gap surfaced by the seam review:
+  backspace-joining two paragraphs could leave transiently wrong styling
+  (extra spacing or a stray emphasis/code span across the join) until the next
+  edit re-parsed the region.
 
 ## [0.9.0] - 2026-07-13
 
