@@ -11,8 +11,15 @@ import AppKit
 
 enum MarkdownInputHandler {
 
-    static func handleListInsertion(textView: NSTextView, affectedCharRange: NSRange, replacementString: String?) -> Bool {
-        return MarkdownLists.handleInsertion(textView: textView, affectedCharRange: affectedCharRange, replacementString: replacementString)
+    /// `codeTokens` (codeBlock + inlineCode, from the keystroke's existing
+    /// parse) answers "is the caret in code?" without the O(doc) document
+    /// scan the handler otherwise runs on every space/Enter/Tab.
+    static func handleListInsertion(textView: NSTextView, affectedCharRange: NSRange, replacementString: String?, codeTokens: [MarkdownToken]? = nil) -> Bool {
+        let isInsideCodeBlock = codeTokens.map {
+            MarkdownDetection.isInsideCodeBlock(location: affectedCharRange.location, codeTokens: $0)
+        }
+        return MarkdownLists.handleInsertion(textView: textView, affectedCharRange: affectedCharRange,
+                                             replacementString: replacementString, isInsideCodeBlock: isInsideCodeBlock)
     }
 
     // MARK: - Block LaTeX Auto-Wrap
@@ -20,6 +27,10 @@ enum MarkdownInputHandler {
     private static func insertTextProgrammatically(_ textView: NSTextView, text: String, at range: NSRange, cursorAfter: Int) {
         if let coord = textView.delegate as? NativeTextViewWrapper.Coordinator {
             coord.isProgrammaticEdit = true
+            // Replaces a suppressed keystroke that never applied — reset its
+            // pending count so this edit registers as the cycle's single
+            // tracked edit and textDidChange keeps the trusted fast paths.
+            coord.pendingEditCount = 0
         }
         textView.insertText(text, replacementRange: range)
         if let coord = textView.delegate as? NativeTextViewWrapper.Coordinator {

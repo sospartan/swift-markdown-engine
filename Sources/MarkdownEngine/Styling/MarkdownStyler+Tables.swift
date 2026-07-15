@@ -25,21 +25,184 @@ extension MarkdownStyler {
         let rows: [[String]]
     }
 
+    /// Rendered-table image cache. A table's pixels depend only on its source,
+    /// font, colors, and appearance — so identical keys can reuse the NSImage
+    /// instead of re-rendering every inactive table on every keystroke.
+    private static let tableImageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        // Must exceed a document's unique-table count or a full restyle (load /
+        // theme / font change) re-renders every table (same thrash class as the
+        // metadata cap). NSCache still auto-evicts under memory pressure.
+        cache.countLimit = 2048
+        return cache
+    }()
+
+    /// Pixel-level fingerprint of a theme color: its sRGB components resolved
+    /// under `appearance`. NSColor descriptions are not sound identities —
+    /// named dynamic colors describe by name only (two providers collide),
+    /// unnamed ones by per-instance UUID (never hit) — so key on what actually
+    /// reaches the bitmap.
+    private static func colorKey(_ color: NSColor, under appearance: NSAppearance) -> String {
+        var srgb: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            srgb = color.usingColorSpace(.sRGB)
+        }
+        guard let c = srgb else { return "\(color)" }
+        return String(format: "%.4f,%.4f,%.4f,%.4f",
+                      c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
+    }
+
+    /// Resolving six colors per table per keystroke is measurable (10 tables ×
+    /// 6 appearance-scoped resolutions). The resolved prefix depends only on
+    /// the color INSTANCES + appearance + font, so memoize it by identity —
+    /// theme copies keep the same NSColor references across keystrokes.
+    private static let themeKeyLock = NSLock()
+    private static var themeKeyCache: [String: String] = [:]
+
+    private static func themeKeyPrefix(ctx: StylingContext, appearance: NSAppearance) -> String {
+        let theme = ctx.configuration.theme
+        let identity = "\(ctx.baseFont.fontName)|\(ctx.baseFont.pointSize)|\(appearance.name.rawValue)|"
+            + "\(ObjectIdentifier(theme.bodyText))|\(ObjectIdentifier(theme.mutedText))|"
+            + "\(ObjectIdentifier(theme.highlightColor))|\(ObjectIdentifier(ctx.codeBackgroundColor))|"
+            + "\(ObjectIdentifier(theme.latexLightModeText))|\(ObjectIdentifier(theme.latexDarkModeText))|"
+            + "\(ObjectIdentifier(type(of: ctx.services.latex)))"
+
+        themeKeyLock.lock()
+        if let cached = themeKeyCache[identity] {
+            themeKeyLock.unlock()
+            return cached
+        }
+        themeKeyLock.unlock()
+
+        // Every input renderTable reads must be in the key: fonts, all theme
+        // colors it draws with, and the latex renderer (by type — a NoOp and a
+        // real renderer must not share entries).
+        let prefix = [
+            ctx.baseFont.fontName,
+            "\(ctx.baseFont.pointSize)",
+            appearance.name.rawValue,
+            colorKey(theme.bodyText, under: appearance),
+            colorKey(theme.mutedText, under: appearance),
+            colorKey(theme.highlightColor, under: appearance),
+            colorKey(ctx.codeBackgroundColor, under: appearance),
+            colorKey(theme.latexLightModeText, under: appearance),
+            colorKey(theme.latexDarkModeText, under: appearance),
+            "\(ObjectIdentifier(type(of: ctx.services.latex)))",
+        ].joined(separator: "|")
+
+        themeKeyLock.lock()
+        if themeKeyCache.count > 32 { themeKeyCache.removeAll() }
+        themeKeyCache[identity] = prefix
+        themeKeyLock.unlock()
+        return prefix
+    }
+
+    /// Parse + content-hash for a table source, memoized: both are pure in
+    /// the source text but were recomputed for every table on every keystroke
+    /// (the non-render share of styleTables). FIFO-capped like the block token
+    /// memo — the cap MUST exceed a document's table count, else cyclic access
+    /// over the full table set is Bélády-pessimal under FIFO (~100% miss) and
+    /// every table re-parses+re-hashes every keystroke.
+    private static let tableMetaCap = 8192
+    private static let tableMetaLock = NSLock()
+    private static var tableMetaCache: [String: (parsed: ParsedTable?, hash: Int)] = [:]
+    private static var tableMetaOrder: [String] = []
+
+    static func tableMeta(for source: String) -> (parsed: ParsedTable?, hash: Int) {
+        tableMetaLock.lock()
+        if let cached = tableMetaCache[source] {
+            tableMetaLock.unlock()
+            return cached
+        }
+        tableMetaLock.unlock()
+
+        let computed = (parseTableSource(source), stableTableContentHash(for: source))
+
+        tableMetaLock.lock()
+        if tableMetaCache[source] == nil {
+            tableMetaCache[source] = computed
+            tableMetaOrder.append(source)
+            if tableMetaOrder.count > tableMetaCap {
+                tableMetaCache[tableMetaOrder.removeFirst()] = nil
+            }
+        }
+        tableMetaLock.unlock()
+        return computed
+    }
+
+    /// Returns the rendered image for `source`, from cache when possible.
+    /// `rendered` is true only when a fresh render actually happened.
+    /// `availableWidth` caps the table's width (cells wrap onto extra lines);
+    /// it is part of the cache key because the layout depends on it.
+    static func tableImage(
+        for source: String,
+        parsed: ParsedTable,
+        ctx: StylingContext,
+        appearance: NSAppearance,
+        availableWidth: CGFloat
+    ) -> (image: NSImage, rendered: Bool) {
+        let widthKey = Int(availableWidth.rounded())
+        let key = (themeKeyPrefix(ctx: ctx, appearance: appearance) + "|w\(widthKey)|" + source) as NSString
+        if let cached = tableImageCache.object(forKey: key) {
+            return (cached, false)
+        }
+        let image = renderTable(
+            parsed,
+            baseFont: ctx.baseFont,
+            theme: ctx.configuration.theme,
+            codeBackgroundColor: ctx.codeBackgroundColor,
+            latex: ctx.services.latex,
+            appearance: appearance,
+            availableWidth: availableWidth
+        )
+        tableImageCache.setObject(image, forKey: key)
+        return (image, true)
+    }
+
     static func styleTables(_ ctx: StylingContext) -> [StyledRange] {
         var attrs: [StyledRange] = []
         // Per-content occurrence counter so identical tables get distinct sourceIDs.
         var occurrenceByContentHash: [Int: Int] = [:]
-        for (idx, token) in ctx.tokens.enumerated() where token.kind == .table {
+        var tableCount = 0
+        var renderedCount = 0
+        let tablesT0 = DispatchTime.now().uptimeNanoseconds
+        // Iterate the pre-classified table array (not all document tokens).
+        // The occurrence counter exists for stable duplicate-table sourceIDs,
+        // and a sourceID is only CONSUMED by a table that renders this pass
+        // (inactive + in scope). Equal content implies equal source length,
+        // so only tables sharing a length with a rendering table can affect
+        // its occurrence index — every other inactive table skips the
+        // substring + parse/hash AND the .spellingState write (applied
+        // UNCLIPPED, it used to touch every table in the document on every
+        // keystroke). Typing prose renders no table → all tables skip.
+        let tableIndexed = ctx.tableIndexed
+        var neededLengths: Set<Int> = []
+        for (idx, token) in tableIndexed
+        where !ctx.activeTokenIndices.contains(idx) && !ctx.outsideScope(token.range) {
+            neededLengths.insert(token.range.length)
+        }
+        var skippedCount = 0
+        var metaNanos: UInt64 = 0
+        for (idx, token) in tableIndexed {
+            tableCount += 1
+            if !ctx.activeTokenIndices.contains(idx),
+               !neededLengths.contains(token.range.length) {
+                skippedCount += 1
+                continue
+            }
             // Tokenizer already drops tables overlapping fenced code, so no re-check here.
             attrs.append((token.range, [.spellingState: 0]))
 
+            let metaT0 = DispatchTime.now().uptimeNanoseconds
             let source = ctx.nsText.substring(with: token.range)
-            guard let parsed = parseTableSource(source) else { continue }
+            let meta = tableMeta(for: source)
+            metaNanos &+= DispatchTime.now().uptimeNanoseconds - metaT0
+            guard let parsed = meta.parsed else { continue }
 
-            // Advance occurrence index even for active tables so inactive duplicates stay stable.
-            let contentHash = stableTableContentHash(for: source)
-            let occurrenceIndex = occurrenceByContentHash[contentHash, default: 0]
-            occurrenceByContentHash[contentHash] = occurrenceIndex + 1
+            // Advance occurrence index even for active/out-of-scope tables so
+            // inactive duplicates keep stable sourceIDs.
+            let occurrenceIndex = occurrenceByContentHash[meta.hash, default: 0]
+            occurrenceByContentHash[meta.hash] = occurrenceIndex + 1
 
             let isActive = ctx.activeTokenIndices.contains(idx)
             if isActive {
@@ -59,20 +222,28 @@ extension MarkdownStyler {
                 continue
             }
 
+            // Outside the restyle scope the anchor attrs would be clipped away
+            // at application time — skip the render lookup and anchor build
+            // (occurrence bookkeeping above already ran, keeping IDs stable).
+            if ctx.outsideScope(token.range) { continue }
+
             // See renderTable: resolve table colors under the text view's real appearance.
             let renderAppearance = ctx.layoutBridge?.firstTextContainer?.textView?.effectiveAppearance
                 ?? NSApp.effectiveAppearance
-            let image = renderTable(
-                parsed,
-                baseFont: ctx.baseFont,
-                theme: ctx.configuration.theme,
-                codeBackgroundColor: ctx.codeBackgroundColor,
-                latex: ctx.services.latex,
-                appearance: renderAppearance
+            // Cells wrap to the container width (Obsidian-style); the render
+            // only exceeds it when the per-column floors genuinely don't fit,
+            // in which case the scrollable overlay below takes over.
+            let containerWidth = effectiveContainerWidth(for: ctx)
+            let (image, rendered) = tableImage(
+                for: source,
+                parsed: parsed,
+                ctx: ctx,
+                appearance: renderAppearance,
+                availableWidth: containerWidth
             )
+            if rendered { renderedCount += 1 }
             let imageBounds = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
             // Wide tables → scrollable mode (NSScrollView overlay); narrow → collapsed.
-            let containerWidth = effectiveContainerWidth(for: ctx)
             let isWide = image.size.width > containerWidth + 0.5
             let computedSourceID = stableTableSourceID(
                 for: source,
@@ -97,6 +268,11 @@ extension MarkdownStyler {
                 ctx: ctx,
                 attrs: &attrs
             )
+        }
+        if tableCount > 0 {
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - tablesT0) / 1_000_000
+            let metaMs = Double(metaNanos) / 1_000_000
+            PerfTrace.note { "styleTables scanned=\(tableCount) tables (skipped=\(skippedCount)), re-rendered=\(renderedCount) NSImage in \(String(format: "%.2f", ms))ms (substring+meta=\(String(format: "%.2f", metaMs))ms)" }
         }
         return attrs
     }
@@ -268,7 +444,8 @@ extension MarkdownStyler {
         theme: MarkdownEditorTheme,
         codeBackgroundColor: NSColor,
         latex: any LatexRenderer,
-        appearance: NSAppearance
+        appearance: NSAppearance,
+        availableWidth: CGFloat
     ) -> NSImage {
         let columnCount = table.alignments.count
         let cellHPadding: CGFloat = 12
@@ -302,12 +479,39 @@ extension MarkdownStyler {
             }
         }
 
-        var columnWidths = [CGFloat](repeating: minColumnContentWidth, count: columnCount)
-        var maxCellHeight: CGFloat = baseLineHeight
+        // CSS automatic table layout (W3C 17.5.2.2), which is what browser-based
+        // editors like Obsidian get for free: each column has a MAXIMUM width
+        // (content on one line) and a MINIMUM width (MCW — content may wrap but
+        // must not overflow, i.e. the widest unbreakable whitespace-separated
+        // segment). Measured segment-by-segment: a too-narrow boundingRect
+        // would emergency-break INSIDE words and understate the minimum.
+        func widestUnbreakableSegment(_ cell: NSAttributedString) -> CGFloat {
+            let str = cell.string as NSString
+            let whitespace = CharacterSet.whitespacesAndNewlines
+            var widest: CGFloat = 0
+            var segStart = -1
+            for i in 0...str.length {
+                let isBreak = i == str.length || {
+                    guard let scalar = Unicode.Scalar(str.character(at: i)) else { return false }
+                    return whitespace.contains(scalar)
+                }()
+                if isBreak {
+                    if segStart >= 0 {
+                        let segment = cell.attributedSubstring(from: NSRange(location: segStart, length: i - segStart))
+                        widest = max(widest, ceil(segment.size().width))
+                        segStart = -1
+                    }
+                } else if segStart < 0 {
+                    segStart = i
+                }
+            }
+            return widest
+        }
+        var maxWidths = [CGFloat](repeating: minColumnContentWidth, count: columnCount)
+        var minWidths = [CGFloat](repeating: minColumnContentWidth, count: columnCount)
         func considerCell(_ cell: NSAttributedString, col: Int) {
-            let size = cell.size()
-            columnWidths[col] = max(columnWidths[col], ceil(size.width))
-            maxCellHeight = max(maxCellHeight, ceil(size.height))
+            maxWidths[col] = max(maxWidths[col], ceil(cell.size().width))
+            minWidths[col] = max(minWidths[col], widestUnbreakableSegment(cell))
         }
         for (i, cell) in headerCells.enumerated() where i < columnCount {
             considerCell(cell, col: i)
@@ -318,13 +522,56 @@ extension MarkdownStyler {
             }
         }
 
-        let lineHeight = max(baseLineHeight, maxCellHeight)
+        // Distribute the available width:
+        // - everything fits on one line → natural (maximum) widths;
+        // - too wide → shrink to the available width, but never below a
+        //   column's longest unbreakable word; the slack above the minimums is
+        //   distributed proportionally to each column's (max − min) stretch;
+        // - even the minimums don't fit (many-column tables) → columns stay at
+        //   their minimums, the table renders wider than the container, and
+        //   the horizontal-scroll overlay takes over as before.
+        let chrome = CGFloat(columnCount) * 2 * cellHPadding
+            + CGFloat(columnCount + 1) * borderWidth
+        let contentAvailable = availableWidth - chrome
+        let sumMax = maxWidths.reduce(0, +)
+        let sumMin = minWidths.reduce(0, +)
+        var columnWidths = maxWidths
+        if contentAvailable > 0, sumMax > contentAvailable {
+            if sumMin >= contentAvailable {
+                columnWidths = minWidths
+            } else {
+                let extra = contentAvailable - sumMin
+                let totalStretch = sumMax - sumMin
+                columnWidths = zip(minWidths, maxWidths).map { mn, mx in
+                    mn + ((mx - mn) / totalStretch * extra).rounded(.down)
+                }
+            }
+        }
+
+        // Per-row heights: each row is as tall as its tallest (wrapped) cell.
+        func cellHeight(_ cell: NSAttributedString, col: Int) -> CGFloat {
+            let bounds = cell.boundingRect(
+                with: NSSize(width: columnWidths[col], height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin]
+            )
+            return ceil(bounds.height)
+        }
         let rowCount = 1 + table.rows.count // header + body rows
+        var rowContentHeights = [CGFloat](repeating: baseLineHeight, count: rowCount)
+        for (i, cell) in headerCells.enumerated() where i < columnCount {
+            rowContentHeights[0] = max(rowContentHeights[0], cellHeight(cell, col: i))
+        }
+        for (rowIdx, row) in bodyCells.enumerated() {
+            for (i, cell) in row.enumerated() where i < columnCount {
+                rowContentHeights[rowIdx + 1] = max(rowContentHeights[rowIdx + 1], cellHeight(cell, col: i))
+            }
+        }
+
         let totalWidth = columnWidths.reduce(0, +)
             + CGFloat(columnCount) * 2 * cellHPadding
             + CGFloat(columnCount + 1) * borderWidth
-        let rowHeight = lineHeight + 2 * cellVPadding
-        let totalHeight = CGFloat(rowCount) * rowHeight + CGFloat(rowCount + 1) * borderWidth
+        let totalHeight = rowContentHeights.reduce(0) { $0 + $1 + 2 * cellVPadding }
+            + CGFloat(rowCount + 1) * borderWidth
 
         let size = NSSize(width: totalWidth, height: totalHeight)
 
@@ -337,7 +584,7 @@ extension MarkdownStyler {
         var rowTop = [CGFloat](repeating: 0, count: rowCount + 1)
         rowTop[0] = borderWidth
         for i in 0..<rowCount {
-            rowTop[i + 1] = rowTop[i] + rowHeight + borderWidth
+            rowTop[i + 1] = rowTop[i] + rowContentHeights[i] + 2 * cellVPadding + borderWidth
         }
 
         let alignments = table.alignments
@@ -351,7 +598,7 @@ extension MarkdownStyler {
                 x: borderWidth,
                 y: borderWidth,
                 width: size.width - 2 * borderWidth,
-                height: rowHeight
+                height: rowContentHeights[0] + 2 * cellVPadding
             )).fill()
 
             // Outer border
@@ -384,27 +631,27 @@ extension MarkdownStyler {
                 guard col < columnCount else { return }
                 let cellLeft = columnLeft[col] + cellHPadding
                 let cellRight = columnLeft[col + 1] - borderWidth - cellHPadding
-                let availableWidth = cellRight - cellLeft
-                // Align via NSParagraphStyle in the content rect so the text engine handles clipping.
+                let cellContentWidth = cellRight - cellLeft
+                // Align via NSParagraphStyle; word-wrap fills the row height
+                // measured above (long words fall back to character breaks).
                 let paragraph = NSMutableParagraphStyle()
                 switch alignments[col] {
                 case .left:   paragraph.alignment = .left
                 case .center: paragraph.alignment = .center
                 case .right:  paragraph.alignment = .right
                 }
-                paragraph.lineBreakMode = .byClipping
+                paragraph.lineBreakMode = .byWordWrapping
                 let aligned = NSMutableAttributedString(attributedString: s)
                 aligned.addAttribute(
                     .paragraphStyle,
                     value: paragraph,
                     range: NSRange(location: 0, length: aligned.length)
                 )
-                let cellInnerTop = rowTop[row] + max(0, (rowHeight - lineHeight) / 2)
                 let drawRect = NSRect(
                     x: cellLeft,
-                    y: cellInnerTop,
-                    width: availableWidth,
-                    height: lineHeight
+                    y: rowTop[row] + cellVPadding,
+                    width: cellContentWidth,
+                    height: rowContentHeights[row]
                 )
                 aligned.draw(with: drawRect, options: [.usesLineFragmentOrigin], context: nil)
             }

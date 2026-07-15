@@ -55,6 +55,8 @@ struct TextStylingService {
         activeTokenIndices: Set<Int>,
         wikiLinkIDProvider: @escaping (NSRange) -> String?,
         precomputedTokens: [MarkdownToken]? = nil,
+        classified: MarkdownStyler.ClassifiedStyleTokens? = nil,
+        precomputedBlocks: [Block]? = nil,
         configuration: MarkdownEditorConfiguration = .default
     ) {
         let paragraphs = normalize(paragraphCandidates)
@@ -70,6 +72,7 @@ struct TextStylingService {
             return
         }
 
+        let styleT0 = DispatchTime.now().uptimeNanoseconds
         let styledRanges = MarkdownStyler.styleAttributes(
             text: textView.string,
             fontName: baseFont.fontName,
@@ -79,10 +82,14 @@ struct TextStylingService {
             activeTokenIndices: activeTokenIndices,
             wikiLinkIDProvider: wikiLinkIDProvider,
             precomputedTokens: precomputedTokens,
+            classified: classified,
+            precomputedBlocks: precomputedBlocks,
             scopedRanges: paragraphs,
             configuration: configuration
         )
+        let styleMs = Double(DispatchTime.now().uptimeNanoseconds - styleT0) / 1_000_000
 
+        let spellT0 = DispatchTime.now().uptimeNanoseconds
         let spellingDisabledRanges = styledRanges.compactMap { (range, attrs) -> NSRange? in
             attrs[.spellingState] as? Int == 0 ? range : nil
         }
@@ -96,6 +103,8 @@ struct TextStylingService {
         for disabledRange in spellingDisabledRanges {
             textView.textStorage?.addAttribute(.spellingState, value: 0, range: disabledRange)
         }
+        let spellMs = Double(DispatchTime.now().uptimeNanoseconds - spellT0) / 1_000_000
+        let attrT0 = DispatchTime.now().uptimeNanoseconds
         for paragraph in paragraphs {
             textView.textStorage?.setAttributes([
                 .font: baseFont,
@@ -111,18 +120,24 @@ struct TextStylingService {
             }
         }
         textView.textStorage?.endEditing()
+        let attrMs = Double(DispatchTime.now().uptimeNanoseconds - attrT0) / 1_000_000
         // No ensureLayout here:
+        let evlT0 = DispatchTime.now().uptimeNanoseconds
         textView.setNeedsDisplay(textView.visibleRect)
         (textView as? NativeTextView)?.ensureVisibleLayout()
+        let evlMs = Double(DispatchTime.now().uptimeNanoseconds - evlT0) / 1_000_000
+        PerfTrace.note { "  restyle split: styleAttrs=\(String(format: "%.2f", styleMs))ms spell=\(String(format: "%.2f", spellMs))ms attrApply(paras=\(paragraphs.count))=\(String(format: "%.2f", attrMs))ms ensureVisLayout=\(String(format: "%.2f", evlMs))ms" }
     }
 
     private static func normalize(_ candidates: [NSRange]) -> [NSRange] {
+        // Exact-duplicate drop in one pass (was O(n²) via contains); order and
+        // overlapping-but-unequal ranges are preserved exactly as before.
+        var seen = Set<Int>()
+        seen.reserveCapacity(candidates.count)
         var result: [NSRange] = []
         for candidate in candidates where candidate.location != NSNotFound && candidate.length > 0 {
-            if result.contains(where: { $0.location == candidate.location && $0.length == candidate.length }) {
-                continue
-            }
-            result.append(candidate)
+            let key = candidate.location &* 1_000_003 &+ candidate.length
+            if seen.insert(key).inserted { result.append(candidate) }
         }
         return result
     }

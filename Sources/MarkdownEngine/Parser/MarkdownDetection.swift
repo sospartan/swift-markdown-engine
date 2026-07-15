@@ -95,6 +95,54 @@ enum MarkdownDetection {
         isInsideCodeBlock(range: NSRange(location: location, length: 0), codeTokens: codeTokens)
     }
 
+    /// Count of non-overlapping ``` occurrences, scanning left to right —
+    /// exactly `components(separatedBy: "```").count - 1`, but as one UTF-16
+    /// pass with no substring-array allocation.
+    static func tripleBacktickCount(in text: NSString) -> Int {
+        let length = text.length
+        guard length >= 3 else { return 0 }
+        var buffer = [unichar](repeating: 0, count: length)
+        text.getCharacters(&buffer, range: NSRange(location: 0, length: length))
+        var count = 0
+        var i = 0
+        while i + 2 < length {                           // i can reach length - 3
+            if buffer[i] == 0x60, buffer[i + 1] == 0x60, buffer[i + 2] == 0x60 {
+                count += 1
+                i += 3
+            } else {
+                i += 1
+            }
+        }
+        return count
+    }
+
+    /// The ``` count contributed by the backtick runs that intersect `range`.
+    /// The window expands through adjacent backticks on both sides, so every
+    /// run inside it is a MAXIMAL run of the whole text — and the greedy global
+    /// count is exactly Σ floor(runLen/3) over maximal runs, which makes these
+    /// window counts composable: full = fullBefore − windowBefore + windowAfter.
+    static func backtickWindowCount(in text: NSString, around range: NSRange) -> Int {
+        let length = text.length
+        guard range.location >= 0, NSMaxRange(range) <= length else { return 0 }
+        var lo = range.location
+        while lo > 0, text.character(at: lo - 1) == 0x60 { lo -= 1 }
+        var hi = NSMaxRange(range)
+        while hi < length, text.character(at: hi) == 0x60 { hi += 1 }
+        var count = 0
+        var run = 0
+        var i = lo
+        while i < hi {
+            if text.character(at: i) == 0x60 {
+                run += 1
+            } else {
+                count += run / 3
+                run = 0
+            }
+            i += 1
+        }
+        return count + run / 3
+    }
+
     // MARK: - LaTeX Detection
 
     static func isInsideLatex(location: Int, in text: String) -> Bool {

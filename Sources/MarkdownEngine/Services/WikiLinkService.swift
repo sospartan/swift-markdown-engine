@@ -189,6 +189,84 @@ public enum WikiLinkService {
         return (storage, metadata)
     }
 
+    /// Incremental counterpart to `makeStorageState`: splice a single contiguous
+    /// edit into the previous storage form in O(edit + #links).
+    ///
+    /// Outside link syntax, display and storage text are identical, so an edit
+    /// that provably cannot create, destroy, or touch a link maps 1:1 into the
+    /// storage string; links after the edit just shift by the length delta.
+    /// Returns nil whenever that proof fails — callers fall back to the full
+    /// `makeStorageState` rebuild.
+    public static func updatedStorageState(
+        displayText: String,
+        editedRange: NSRange,
+        changeInLength delta: Int,
+        previousStorage: String,
+        previousMetadata: [RangeKey: LinkMetadata]
+    ) -> (storage: String, metadata: [RangeKey: LinkMetadata])? {
+        let nsDisplay = displayText as NSString
+        let nsPrevStorage = previousStorage as NSString
+
+        // Only contiguous, small, well-formed edits take the fast path.
+        guard delta != Int.min,
+              editedRange.location != NSNotFound,
+              editedRange.length >= 0, editedRange.length <= 4096,
+              NSMaxRange(editedRange) <= nsDisplay.length,
+              editedRange.length - delta >= 0 else { return nil }
+
+        let oldEditLength = editedRange.length - delta
+        let oldEditRange = NSRange(location: editedRange.location, length: oldEditLength)
+
+        // The edit must not create or complete link syntax: no [[ or ]] near it
+        // in the NEW text (±3 covers a bracket typed against an existing one)…
+        let probeStart = max(0, editedRange.location - 3)
+        let probeEnd = min(nsDisplay.length, NSMaxRange(editedRange) + 3)
+        let probe = nsDisplay.substring(with: NSRange(location: probeStart, length: probeEnd - probeStart))
+        if probe.contains("[[") || probe.contains("]]") { return nil }
+
+        // …and no existing link may overlap the edit (old display coordinates;
+        // ±3 also rejects edits adjacent to a link's markers).
+        let guardRange = NSRange(location: max(0, oldEditRange.location - 3), length: oldEditLength + 6)
+        for key in previousMetadata.keys {
+            if NSIntersectionRange(NSRange(location: key.location, length: key.length), guardRange).length > 0 {
+                return nil
+            }
+        }
+
+        // Map the display edit offset into storage coordinates: every link
+        // before the edit is longer in storage by (storage length − display length).
+        var storageOffsetDelta = 0
+        for (key, meta) in previousMetadata where key.location < editedRange.location {
+            storageOffsetDelta += meta.storageRange.length - key.length
+        }
+        let storageEditStart = editedRange.location + storageOffsetDelta
+        guard storageEditStart >= 0,
+              storageEditStart + oldEditLength <= nsPrevStorage.length else { return nil }
+
+        // Splice — outside links the replaced/inserted characters are identical
+        // in both forms.
+        let replacement = nsDisplay.substring(with: editedRange)
+        let storage = nsPrevStorage.replacingCharacters(
+            in: NSRange(location: storageEditStart, length: oldEditLength),
+            with: replacement
+        )
+
+        // Shift every link after the edit by the delta; links before it are untouched.
+        var metadata: [RangeKey: LinkMetadata] = [:]
+        metadata.reserveCapacity(previousMetadata.count)
+        for (key, meta) in previousMetadata {
+            if key.location >= NSMaxRange(oldEditRange) {
+                metadata[RangeKey(NSRange(location: key.location + delta, length: key.length))] =
+                    LinkMetadata(id: meta.id,
+                                 storageRange: NSRange(location: meta.storageRange.location + delta,
+                                                       length: meta.storageRange.length))
+            } else {
+                metadata[key] = meta
+            }
+        }
+        return (storage, metadata)
+    }
+
     /// Hand scan for display-form wiki links `(?<!!)\[\[...\]\]`, replacing the slow regex lookbehind.
     static func displayLinkRanges(_ s: NSString) -> [(range: NSRange, isImage: Bool)] {
         let len = s.length

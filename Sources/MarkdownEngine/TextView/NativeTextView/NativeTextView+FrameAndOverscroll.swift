@@ -27,6 +27,7 @@ extension NativeTextView {
         let lineHeight = layoutBridgeDefaultLineHeight(for: self.baseFont, using: layoutBridge)
         // File switch/resize forces full layout until height settles; typing stays O(edit).
         if debugTag == "?" { pendingFullLayoutMeasure = true }
+        let forcedFullLayout = pendingFullLayoutMeasure
         let measured = measuredBaseContentHeight(
             minimumHeight: lineHeight,
             forceFullLayout: pendingFullLayoutMeasure
@@ -42,6 +43,12 @@ extension NativeTextView {
         let overscrollChanged = abs(resolvedOverscroll - activeBottomOverscroll) > 0.5
         // Height settled → stop forcing full layout (until the next switch/resize).
         if !(baseHeightChanged || overscrollChanged) { pendingFullLayoutMeasure = false }
+        // A persistent fullLayout=1 with hChanged/osChanged flipping every
+        // keystroke = the bistable-height loop: every keystroke then pays a
+        // FULL document ensureLayout inside the overscroll span.
+        PerfTrace.note {
+            "overscroll[\(debugTag)]: fullLayout=\(forcedFullLayout ? 1 : 0) h=\(Int(measured))\(baseHeightChanged ? " hChanged" : "")\(overscrollChanged ? " osChanged" : "")"
+        }
         guard baseHeightChanged || overscrollChanged else { return }
         baseContentHeight = measured
         activeBottomOverscroll = resolvedOverscroll
@@ -292,6 +299,12 @@ extension NativeTextView {
     }
 
     override func scrollRangeToVisible(_ range: NSRange) {
+        // Runs from inside AppKit's post-edit processing — outside every
+        // sequential span; accumulate so the frame stops hiding it.
+        PerfTrace.accumulate("reveal") { revealRangeIfNeeded(range) }
+    }
+
+    private func revealRangeIfNeeded(_ range: NSRange) {
         if suppressAutoRevealOnce {
             suppressAutoRevealOnce = false
             return
@@ -334,26 +347,48 @@ extension NativeTextView {
             // Reveal the ACTUAL caret location's segment (not the stepped-back revealOffset), so a
             // freshly soft-wrapped last line at the document end still scrolls into view; fall back to
             // the stepped-back offset only when the true end-of-document has no segment of its own.
-            for segOffset in [min(range.location, docLength), revealOffset] {
-                guard let segLoc = tlm.textContentManager?.location(tlm.documentRange.location, offsetBy: segOffset) else { continue }
-                var found = false
-                tlm.enumerateTextSegments(in: NSTextRange(location: segLoc), type: .standard, options: []) { _, segFrame, _, _ in
-                    if segFrame.height > 0 { revealRect = segFrame; found = true }   // caret rect = its line, not the block
-                    return false
+            func caretSegmentRect(fallback: CGRect) -> CGRect {
+                var rect = fallback
+                for segOffset in [min(range.location, docLength), revealOffset] {
+                    guard let segLoc = tlm.textContentManager?.location(tlm.documentRange.location, offsetBy: segOffset) else { continue }
+                    var found = false
+                    tlm.enumerateTextSegments(in: NSTextRange(location: segLoc), type: .standard, options: []) { _, segFrame, _, _ in
+                        if segFrame.height > 0 { rect = segFrame; found = true }   // caret rect = its line, not the block
+                        return false
+                    }
+                    if found { break }
                 }
-                if found { break }
+                return rect
             }
-            let frame = revealRect.offsetBy(dx: 0, dy: self.frame.origin.y)
+            revealRect = caretSegmentRect(fallback: revealRect)
+            var frame = revealRect.offsetBy(dx: 0, dy: self.frame.origin.y)
             let visibleTop = cv.bounds.origin.y + insetsTop
             let visibleBottom = cv.bounds.origin.y + cv.bounds.height
             let margin: CGFloat = 24
+            if frame.minY < visibleTop || frame.maxY > visibleBottom {
+                // The caret's Y is the sum of the fragment heights above it;
+                // while any of those are estimate-only (a table image estimates
+                // as one text line, ~250pt short), the caret reads far too high
+                // and typing "reveals" upward. Settle layout up to the caret
+                // before trusting an out-of-view verdict — spurious ones then
+                // dissolve, genuine jumps get the correct target. Free when the
+                // caret is already visible (the common per-keystroke case).
+                if let end = tlm.textContentManager?.location(tlm.documentRange.location, offsetBy: min(range.location + 1, docLength)),
+                   let settleRange = NSTextRange(location: tlm.documentRange.location, end: end) {
+                    // O(doc-start → caret) real layout — the prime suspect
+                    // whenever `+reveal` dominates a frame.
+                    PerfTrace.accumulate("revealSettle") { tlm.ensureLayout(for: settleRange) }
+                }
+                revealRect = caretSegmentRect(fallback: revealRect)
+                frame = revealRect.offsetBy(dx: 0, dy: self.frame.origin.y)
+            }
             let targetY: CGFloat
             if frame.minY < visibleTop {
                 targetY = frame.minY - insetsTop - margin
             } else if frame.maxY > visibleBottom {
                 targetY = frame.maxY - cv.bounds.height + margin
             } else {
-                return false   // already visible
+                return false   // already visible (or a spurious verdict, corrected)
             }
             cv.scroll(to: NSPoint(x: cv.bounds.origin.x, y: targetY))
             scrollView.reflectScrolledClipView(cv)
@@ -398,15 +433,17 @@ extension NativeTextView {
     }
 
     /// Force TextKit 2 to lay out all fragments within the current visible rect.
+    /// Walks from the document head, not the viewport: a fragment's Y is the
+    /// sum of the heights above it, so leaving anything above merely estimated
+    /// shifts the visible content when it later settles. A viewport-scoped walk
+    /// (tried as a perf win) caused content shifts, spurious caret reveals, and
+    /// a bistable frame height; steady-state cost here is an enumeration over
+    /// already-laid-out fragments.
     func ensureVisibleLayout() {
         guard let tlm = textLayoutManager else { return }
-        let visTop = visibleRect.minY
         let visBot = visibleRect.maxY
         tlm.enumerateTextLayoutFragments(from: tlm.documentRange.location, options: [.ensuresLayout]) { fragment in
-            let fr = fragment.layoutFragmentFrame
-            if fr.maxY < visTop { return true }
-            if fr.minY > visBot { return false }
-            return true
+            fragment.layoutFragmentFrame.minY <= visBot
         }
     }
 }
