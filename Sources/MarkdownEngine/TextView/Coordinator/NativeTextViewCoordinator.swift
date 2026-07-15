@@ -40,8 +40,14 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         didSet {
             subscribeToBusNotifications(replacing: oldValue.services.bus)
             subscribeToAppearanceNotification()
+            // Precompiled registry for the per-keystroke parse path — deriving
+            // it from the configuration on every keystroke would rebuild the
+            // delimiter arrays + fingerprint string each time.
+            cachedExtensionRegistry = configuration.extensionRegistry
         }
     }
+    /// Memoized `configuration.extensionRegistry` (see didSet).
+    var cachedExtensionRegistry: ExtensionRegistry = .empty
     /// Last `EmbeddedImageProvider.fingerprint()` value we've reflected in
     /// the textView's attributes. We cache it here because embedders that
     /// MUTATE the same provider over time (async URL fetches, etc.) would
@@ -90,6 +96,10 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// window count around the proposed edit, so textDidChange can update the
     /// census from the edited window alone instead of rescanning the document.
     var pendingBacktickWindow: (location: Int, oldLength: Int, oldCount: Int)?
+    /// Whether the PRE-edit text around the pending edit touched a registered
+    /// extension block fence — captured in shouldChangeTextIn so a DELETED
+    /// fence still forces the full restyle in textDidChange.
+    var pendingExtFenceTouched = false
     /// Set when the storage mutated without the census bookkeeping seeing it
     /// (IME composition) — forces the next census back to a full scan.
     var backtickCensusNeedsRescan = false

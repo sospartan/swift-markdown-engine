@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Extension seam**: opt-in constructs beyond pure markdown. A
+  `MarkdownExtension` contributes an inline form (`==highlight==`), a fenced
+  block form (`::: … :::`), or both — plus content attributes and an HTML
+  wrapper for the clean-copy path; register instances via
+  `MarkdownEditorConfiguration.extensions`. Extensions never emit ranges — the
+  parser derives all geometry, so a misbehaving extension can at worst restyle
+  its own construct. Marker/fence hiding, caret reveal, incremental restyle,
+  table cells, and rich copy are handled generically. Registered extensions can
+  change at runtime; all parse caches key on the registry.
+- `HighlightExtension` (`==text==`) and `StrikethroughExtension` (`~~text~~`),
+  the former built-ins repackaged as extensions, and `ContainerExtension`
+  (`::: … :::`), the first fenced block extension.
+
+### Changed
+- **Breaking**: `==highlight==` and `~~strikethrough~~` are no longer part of
+  the core grammar. Unregistered, the syntax stays literal text. To keep the
+  previous behavior:
+  `configuration.extensions = [HighlightExtension(), StrikethroughExtension()]`.
+  The formatting actions (context menu, `applyHighlightRequest` /
+  `applyStrikethroughRequest`) still insert/remove the markers either way;
+  construct detection (toggle-off, selection state) requires the extension.
+
 ## [0.9.0] - 2026-07-13
 
 ### Added

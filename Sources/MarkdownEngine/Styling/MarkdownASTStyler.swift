@@ -62,10 +62,12 @@ enum MarkdownASTStyler {
             inlineMarkerFont: NSFont(name: fontName, size: hiddenSize) ?? .systemFont(ofSize: hiddenSize),
             caret: caretLocation,
             config: configuration,
+            extensionsByID: configuration.extensionsByID,
             wikiLinkID: wikiLinkIDProvider,
             scopedRanges: scopedRanges
         )
-        let blocks = DocumentAST.parse(text, scopedRanges: scopedRanges, precomputedBlocks: precomputedBlocks)
+        let blocks = DocumentAST.parse(text, scopedRanges: scopedRanges, precomputedBlocks: precomputedBlocks,
+                                       registry: configuration.extensionRegistry)
         var attrs: [StyledRange] = []
         for block in blocks where ctx.inScope(block.range) {
             styleBlock(block, font: baseFont, ctx: ctx, into: &attrs)
@@ -89,8 +91,9 @@ enum MarkdownASTStyler {
             for node in nodes {
                 switch node {
                 case .code(let range, _): ranges.append(range)
-                case .emphasis(_, _, _, let children), .strikethrough(_, _, let children),
-                     .highlight(_, _, let children), .link(_, _, _, _, let children): walk(children)
+                case .emphasis(_, _, _, let children),
+                     .link(_, _, _, _, let children): walk(children)
+                case .ext(let node): walk(node.children)
                 default: break
                 }
             }
@@ -102,6 +105,8 @@ enum MarkdownASTStyler {
                 walk(inlines)
             case .list(_, let items):
                 for item in items { walk(item.inlines) }
+            case .ext(let node):
+                walk(node.inlines)
             default: break
             }
         }
@@ -126,9 +131,10 @@ enum MarkdownASTStyler {
                     walk(children)
                 case .wikiLink(let range, _, _, _):
                     ranges.append(range)
-                case .emphasis(_, _, _, let children), .strikethrough(_, _, let children),
-                     .highlight(_, _, let children):
+                case .emphasis(_, _, _, let children):
                     walk(children)
+                case .ext(let node):
+                    walk(node.children)
                 default: break
                 }
             }
@@ -139,6 +145,8 @@ enum MarkdownASTStyler {
                 walk(inlines)
             case .list(_, let items):
                 for item in items { walk(item.inlines) }
+            case .ext(let node):
+                walk(node.inlines)
             default: break
             }
         }
@@ -305,6 +313,7 @@ enum MarkdownASTStyler {
         let inlineMarkerFont: NSFont
         let caret: Int
         let config: MarkdownEditorConfiguration
+        let extensionsByID: [String: any MarkdownExtension]
         let wikiLinkID: (NSRange) -> String?
         let scopedRanges: [NSRange]?
 
@@ -366,9 +375,40 @@ enum MarkdownASTStyler {
             styleCodeBlock(range: range, ctx: ctx, into: &attrs)
         case .thematicBreak(let range):
             styleThematicBreak(range: range, ctx: ctx, into: &attrs)
+        case .ext(let node):
+            styleExtensionBlock(node, font: font, ctx: ctx, into: &attrs)
         case .blockLatex, .table, .blank:
             break   // NSImage rendering ported next
         }
+    }
+
+    /// Extension fenced block: the extension supplies content ATTRIBUTES only;
+    /// they cover the WHOLE block (fence lines included) so the block reads as
+    /// one cohesive band — the hidden fences would otherwise sit as uncolored
+    /// blank rows above and below the body. Fence lines then mute while the
+    /// caret is inside the block and hide otherwise (mirroring code fences —
+    /// clear color, unchanged font, so the line keeps its height and layout
+    /// stays stable across the active flip).
+    private static func styleExtensionBlock(_ node: ExtensionBlockNode, font: NSFont, ctx: Ctx, into attrs: inout [StyledRange]) {
+        if let ext = ctx.extensionsByID[node.extensionID] {
+            var block = node.range
+            // Keep the block's trailing newline out, so the band doesn't
+            // bleed a full-width background onto the following line.
+            while block.length > 0 {
+                let last = ctx.ns.character(at: NSMaxRange(block) - 1)
+                guard last == 0x0A || last == 0x0D else { break }
+                block.length -= 1
+            }
+            if block.length > 0 {
+                attrs.append((block, ext.contentAttributes(theme: ctx.theme)))
+            }
+        }
+        let markerAttrs: [NSAttributedString.Key: Any] = ctx.isActive(node.range)
+            ? [.foregroundColor: ctx.theme.mutedText]
+            : [.foregroundColor: NSColor.clear]
+        attrs.append((node.openFence, markerAttrs))
+        if let close = node.closeFence { attrs.append((close, markerAttrs)) }
+        styleInlines(node.inlines, font: font, ctx: ctx, into: &attrs)
     }
 
     /// Per-line blockquote: indent, mute content, hide/show `>` markers, tag first char with bar level.
@@ -493,24 +533,17 @@ enum MarkdownASTStyler {
                 }
                 styleInlines(children, font: composed, ctx: ctx, into: &attrs)
 
-            case .strikethrough(let range, let markers, let children):
-                attrs.append((content(of: markers), [
-                    .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .strikethroughColor: ctx.theme.strikethroughColor,
-                ]))
-                if ctx.isActive(range) {
-                    for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+            case .ext(let node):
+                // Extension-contributed span: the extension supplies content
+                // ATTRIBUTES only; every range comes from the parser, so a
+                // misbehaving extension can restyle its own span at worst.
+                if let ext = ctx.extensionsByID[node.extensionID] {
+                    attrs.append((node.contentRange, ext.contentAttributes(theme: ctx.theme)))
                 }
-                styleInlines(children, font: font, ctx: ctx, into: &attrs)
-
-            case .highlight(let range, let markers, let children):
-                attrs.append((content(of: markers), [
-                    .backgroundColor: ctx.theme.highlightColor,
-                ]))
-                if ctx.isActive(range) {
-                    for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+                if ctx.isActive(node.range) {
+                    for marker in node.markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
                 }
-                styleInlines(children, font: font, ctx: ctx, into: &attrs)
+                styleInlines(node.children, font: font, ctx: ctx, into: &attrs)
 
             case .code(let range, let contentRange):
                 attrs.append((contentRange, [.font: ctx.codeFont, .backgroundColor: ctx.codeBackground]))
@@ -594,6 +627,8 @@ enum MarkdownASTStyler {
             case .list(_, let items):
                 // Phase A: shrink only inline markers; the list marker is hidden by the bullet/task pass.
                 for item in items { shrinkInlineMarkers(item.inlines, ctx: ctx, into: &attrs) }
+            case .ext(let node):
+                shrinkInlineMarkers(node.inlines, ctx: ctx, into: &attrs)
             case .codeBlock, .blockLatex, .table, .thematicBreak, .blank:
                 break
             }
@@ -608,14 +643,10 @@ enum MarkdownASTStyler {
                 let active = forceReveal || ctx.isActive(range)
                 if !active { shrink(markers, ctx: ctx, into: &attrs) }
                 shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
-            case .strikethrough(let range, let markers, let children):
-                let active = forceReveal || ctx.isActive(range)
-                if !active { shrink(markers, ctx: ctx, into: &attrs) }
-                shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
-            case .highlight(let range, let markers, let children):
-                let active = forceReveal || ctx.isActive(range)
-                if !active { shrink(markers, ctx: ctx, into: &attrs) }
-                shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
+            case .ext(let node):
+                let active = forceReveal || ctx.isActive(node.range)
+                if !active { shrink(node.markers, ctx: ctx, into: &attrs) }
+                shrinkInlineMarkers(node.children, ctx: ctx, forceReveal: active, into: &attrs)
             case .link(let range, _, _, let markers, let children):
                 let active = forceReveal || ctx.isActive(range)
                 if !active {
