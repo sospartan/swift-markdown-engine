@@ -42,6 +42,9 @@ public protocol MarkdownTableDelegate: Sendable {
     /// structural (row/column add/delete) or cell-text changes. The engine
     /// replaces the table source range and triggers a restyle.
     ///
+    /// `theme`, `codeBackgroundColor`, and `markers` match the inactive image
+    /// path so active cells can style inline markdown the same way.
+    ///
     /// Return `nil` if the host does not want to show an editor for this table
     /// (the engine falls back to image-only display).
     func makeEditorView(
@@ -49,6 +52,9 @@ public protocol MarkdownTableDelegate: Sendable {
         range: NSRange,
         textView: NSTextView,
         baseFont: NSFont,
+        theme: MarkdownEditorTheme,
+        codeBackgroundColor: NSColor,
+        markers: MarkerStyle,
         commit: @escaping (String) -> Void
     ) -> NSView?
 
@@ -90,6 +96,9 @@ public extension MarkdownTableDelegate {
         range: NSRange,
         textView: NSTextView,
         baseFont: NSFont,
+        theme: MarkdownEditorTheme,
+        codeBackgroundColor: NSColor,
+        markers: MarkerStyle,
         commit: @escaping (String) -> Void
     ) -> NSView? { nil }
     @MainActor
@@ -119,4 +128,24 @@ public struct DefaultMarkdownTableDelegate: MarkdownTableDelegate {
 public protocol MarkdownTableEditorControlling: AnyObject {
     /// Begin editing the cell under `point` (coordinates in the editor view).
     func beginEditing(at pointInView: NSPoint)
+
+    /// Apply an inline wrap format (`**`, `*`, `` ` ``, `~~`, `==`) to the
+    /// active cell selection. Return `true` if the editor handled it (engine
+    /// must not also mutate the table source range).
+    func applyInlineMarker(_ marker: String) -> Bool
+
+    /// Wrap the active cell selection as a markdown link, or insert `[](url)`.
+    /// Return `true` if handled.
+    func applyLink(url: String) -> Bool
+
+    /// Return `true` when a cell is currently being edited (first-responder
+    /// lives inside this editor). Used to swallow block-level toolbar actions
+    /// that must not rewrite the pipe-table source.
+    var isEditingCell: Bool { get }
+}
+
+public extension MarkdownTableEditorControlling {
+    func applyInlineMarker(_ marker: String) -> Bool { false }
+    func applyLink(url: String) -> Bool { false }
+    var isEditingCell: Bool { false }
 }

@@ -179,6 +179,9 @@ extension NativeTextView {
                 range: attrRange,
                 textView: self,
                 baseFont: baseFont,
+                theme: configuration.theme,
+                codeBackgroundColor: configuration.services.syntaxHighlighter.backgroundColor(),
+                markers: configuration.markers,
                 commit: { [weak self] replacement in
                     guard let self, let handler = self.tableEditorCommitHandler else { return }
                     handler(attrRange, replacement)
@@ -339,6 +342,41 @@ extension NativeTextView {
         let vacated = overlay.frame
         overlay.removeFromSuperview()
         parent?.setNeedsDisplay(vacated.insetBy(dx: -2, dy: -2))
+    }
+
+    /// Active custom table editor that is editing a cell.
+    ///
+    /// Prefer `isEditingCell` over first-responder ancestry: toolbar / menu clicks
+    /// often steal first responder before the bus notification is delivered.
+    func activeTableEditorController() -> (any MarkdownTableEditorControlling)? {
+        guard !tableEditors.isEmpty else { return nil }
+
+        func controlling(from host: NSView) -> (any MarkdownTableEditorControlling)? {
+            if let c = host as? MarkdownTableEditorControlling { return c }
+            if let scroll = host as? NSScrollView,
+               let doc = scroll.documentView as? MarkdownTableEditorControlling {
+                return doc
+            }
+            return nil
+        }
+
+        for host in tableEditors.values {
+            if let c = controlling(from: host), c.isEditingCell { return c }
+        }
+
+        guard let fr = window?.firstResponder as? NSView else { return nil }
+        for host in tableEditors.values {
+            if let c = controlling(from: host),
+               fr === host || fr.isDescendant(of: host) {
+                return c
+            }
+            if let scroll = host as? NSScrollView, let doc = scroll.documentView,
+               fr === doc || fr.isDescendant(of: doc) || fr === scroll || fr.isDescendant(of: scroll),
+               let c = controlling(from: host) {
+                return c
+            }
+        }
+        return nil
     }
 
     /// Resolve the host editor under a text-view-local point and open a cell.

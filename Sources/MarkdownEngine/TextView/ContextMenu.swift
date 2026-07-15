@@ -168,10 +168,12 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownHeading(_ sender: NSMenuItem) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
         applyHeading(level: sender.tag)
     }
 
     private func applyList(prefix: String) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
         guard let tv = textView else { return }
         let nsText = tv.string as NSString
         let selRange = tv.selectedRange()
@@ -201,7 +203,28 @@ extension NativeTextViewWrapper.Coordinator {
         applyList(prefix: "1. ")
     }
 
+    /// When a custom table cell is first responder, forward inline formats there
+    /// so toolbar/menu actions do not rewrite the pipe-table source range.
+    @discardableResult
+    private func forwardInlineFormatToActiveTableCell(marker: String) -> Bool {
+        guard let ntv = textView as? NativeTextView else { return false }
+        return MainActor.assumeIsolated {
+            guard let editor = ntv.activeTableEditorController(),
+                  editor.isEditingCell else { return false }
+            return editor.applyInlineMarker(marker)
+        }
+    }
+
+    /// Swallow block-level formats while a table cell is being edited.
+    private func shouldSwallowBlockFormatForActiveTableCell() -> Bool {
+        guard let ntv = textView as? NativeTextView else { return false }
+        return MainActor.assumeIsolated {
+            ntv.activeTableEditorController()?.isEditingCell == true
+        }
+    }
+
     @objc func didMarkdownBold(_ sender: Any?) {
+        if forwardInlineFormatToActiveTableCell(marker: "**") { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
 
@@ -227,6 +250,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownItalic(_ sender: Any?) {
+        if forwardInlineFormatToActiveTableCell(marker: "*") { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
 
@@ -252,6 +276,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownHighlight(_ sender: Any?) {
+        if forwardInlineFormatToActiveTableCell(marker: "==") { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
 
@@ -269,6 +294,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownStrikethrough(_ sender: Any?) {
+        if forwardInlineFormatToActiveTableCell(marker: "~~") { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
 
@@ -292,6 +318,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownInlineCode(_ sender: Any?) {
+        if forwardInlineFormatToActiveTableCell(marker: "`") { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
 
@@ -315,6 +342,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownBlockquote(_ sender: Any?) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
         guard let tv = textView else { return }
         let nsText = tv.string as NSString
         let range = tv.selectedRange()
@@ -344,9 +372,17 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownLink(_ sender: Any?) {
+        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
+        if let ntv = textView as? NativeTextView {
+            let handled = MainActor.assumeIsolated {
+                guard let editor = ntv.activeTableEditorController(),
+                      editor.isEditingCell else { return false }
+                return editor.applyLink(url: url)
+            }
+            if handled { return }
+        }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
-        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
 
         if range.length > 0 {
             let nsText = tv.string as NSString
@@ -370,6 +406,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownCodeBlock(_ sender: Any?) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
         let nsText = tv.string as NSString
@@ -386,6 +423,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownHorizontalRule(_ sender: Any?) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
         let nsText = tv.string as NSString
@@ -402,6 +440,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownImage(_ sender: Any?) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
         guard let tv = textView else { return }
         let range = tv.selectedRange()
         let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
