@@ -371,6 +371,56 @@ extension NativeTextViewWrapper.Coordinator {
         }
     }
 
+    /// Turns the current line into a callout marker line (`> [!TYPE] Title`).
+    /// An existing `> [!X]` marker has its type replaced; an existing `> `
+    /// quote line gains the marker after the quote prefix; any other line is
+    /// prefixed with the full `> [!TYPE] ` marker. The cursor is left at the
+    /// title position. Expected `userInfo["type"] as? String` (default "note").
+    @objc func didMarkdownCallout(_ sender: Any?) {
+        if shouldSwallowBlockFormatForActiveTableCell() { return }
+        guard let tv = textView else { return }
+        let rawType = (sender as? NSNotification)?.userInfo?["type"] as? String ?? "note"
+        let type = rawType.uppercased()
+        let nsText = tv.string as NSString
+        let range = tv.selectedRange()
+        let lineRange = nsText.lineRange(for: range)
+        var line = nsText.substring(with: lineRange)
+        let trailingNewline = line.hasSuffix("\n")
+        if trailingNewline { line.removeLast() }
+
+        let marker = "[!\(type)] "
+        let replacement: String
+        let titleOffset: Int
+        if line.hasPrefix("> [!") {
+            // Existing callout marker: replace the type, keep any title.
+            if let close = line.range(of: "]") {
+                let title = String(line[line.index(after: close.lowerBound)...])
+                let titleTrimmed = title.hasPrefix(" ") ? String(title.dropFirst()) : title
+                replacement = "> \(marker)" + titleTrimmed
+                titleOffset = 2 + marker.count
+            } else {
+                replacement = "> \(marker)"
+                titleOffset = 2 + marker.count
+            }
+        } else if line.hasPrefix("> ") {
+            // Existing quote line: insert the marker after the quote prefix.
+            replacement = "> \(marker)" + String(line.dropFirst(2))
+            titleOffset = 2 + marker.count
+        } else {
+            replacement = "> \(marker)" + line
+            titleOffset = 2 + marker.count
+        }
+
+        let finalReplacement = replacement + (trailingNewline ? "\n" : "")
+        if tv.shouldChangeText(in: lineRange, replacementString: finalReplacement) {
+            tv.replaceCharacters(in: lineRange, with: finalReplacement)
+            tv.didChangeText()
+            let cursorLoc = lineRange.location + titleOffset
+            tv.setSelectedRange(NSRange(location: cursorLoc, length: 0))
+            DispatchQueue.main.async { self.text = tv.string }
+        }
+    }
+
     @objc func didMarkdownLink(_ sender: Any?) {
         let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
         if let ntv = textView as? NativeTextView {

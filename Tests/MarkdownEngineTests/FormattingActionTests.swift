@@ -217,4 +217,39 @@ struct FormattingActionTests {
         }
         #expect(tv.string == "text![](img.png)")
     }
+
+    // MARK: - Callout
+
+    @Test func calloutPrefixesPlainLine() {
+        let tv = apply(initialText: "hello\n", selection: NSRange(location: 2, length: 0)) { coord in
+            let note = Notification(name: .init("test"), userInfo: ["type": "warning"])
+            coord.didMarkdownCallout(note)
+        }
+        #expect(tv.string == "> [!WARNING] hello\n")
+        #expect(tv.selectedRange().location == 2 + "[!WARNING] ".count)
+    }
+
+    @Test func calloutDefaultsToNote() {
+        let tv = apply(initialText: "hello", selection: NSRange(location: 0, length: 0)) {
+            $0.didMarkdownCallout(nil)
+        }
+        #expect(tv.string == "> [!NOTE] hello")
+    }
+
+    @Test func calloutConvertsQuoteLine() {
+        let tv = apply(initialText: "> quoted\n", selection: NSRange(location: 4, length: 0)) { coord in
+            let note = Notification(name: .init("test"), userInfo: ["type": "tip"])
+            coord.didMarkdownCallout(note)
+        }
+        #expect(tv.string == "> [!TIP] quoted\n")
+    }
+
+    @Test func calloutReplacesExistingTypeKeepsTitle() {
+        let tv = apply(initialText: "> [!NOTE] My Title\n> body\n", selection: NSRange(location: 5, length: 0)) { coord in
+            let note = Notification(name: .init("test"), userInfo: ["type": "important"])
+            coord.didMarkdownCallout(note)
+        }
+        #expect(tv.string == "> [!IMPORTANT] My Title\n> body\n")
+        #expect(tv.selectedRange().location == 2 + "[!IMPORTANT] ".count)
+    }
 }

@@ -68,6 +68,10 @@ extension NativeTextViewCoordinator {
         didMarkdownImage(notification)
     }
 
+    @objc func handleCalloutNotification(_ notification: Notification) {
+        didMarkdownCallout(notification)
+    }
+
     @objc func handleAppearanceChange(_ notification: Notification) {
         guard let tv = textView else { return }
         // Only react if the notification came from our own text view or from nil (system-wide)
