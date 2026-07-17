@@ -92,6 +92,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// Fires on ↑/↓/Enter/Esc while an inline `[[…]]` preview is open, so the
     /// embedder can drive its autocomplete list. Return `true` to consume the key.
     public var onInlinePreviewKey: ((InlinePreviewKey) -> Bool)?
+    /// Fires when the user just typed a `/` eligible to open an insert-command
+    /// palette (line start or after whitespace, not inside code/active table).
+    /// Embedders typically show an `NSMenu` anchored to `state.caretRect`; on
+    /// confirm/cancel they delete `state.triggerRange` from the text view. The
+    /// engine only detects eligibility — it does not own palette UI or key
+    /// routing while the menu is open.
+    public var onSlashTrigger: ((NSTextView, SlashTriggerState) -> Void)?
     /// Fires when the set of visible code blocks changes, so embedders can
     /// overlay copy buttons (see ``CodeBlockButton``).
     public var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
@@ -160,6 +167,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)? = nil,
         onInlineSelectionChange: ((InlineSelectionState?) -> Void)? = nil,
         onInlinePreviewKey: ((InlinePreviewKey) -> Bool)? = nil,
+        onSlashTrigger: ((NSTextView, SlashTriggerState) -> Void)? = nil,
         onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)? = nil,
         onCalloutIconClick: ((NSView, CGRect, String) -> Void)? = nil,
         onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)? = nil,
@@ -187,6 +195,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.onBuildContextMenu = onBuildContextMenu
         self.onInlineSelectionChange = onInlineSelectionChange
         self.onInlinePreviewKey = onInlinePreviewKey
+        self.onSlashTrigger = onSlashTrigger
         self.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         self.onCalloutIconClick = onCalloutIconClick
         self.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
@@ -337,6 +346,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         context.coordinator.onCalloutIconClick = onCalloutIconClick
+        context.coordinator.onSlashTrigger = onSlashTrigger
 
         textView.tableEditorCommitHandler = { [weak textView, weak coordinator = context.coordinator] range, replacement in
             guard let textView, let coordinator else { return }
@@ -642,6 +652,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         context.coordinator.onCalloutIconClick = onCalloutIconClick
+        context.coordinator.onSlashTrigger = onSlashTrigger
         context.coordinator.onHeadingsDidChange = onHeadingsDidChange
         context.coordinator.didInitialFormatting = true
         context.coordinator.postHeadingsDidChange(for: textView.string)
@@ -662,6 +673,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         coordinator.lastWikiFingerprint = configuration.services.wikiLinks.fingerprint()
         coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         coordinator.onInlinePreviewKey = onInlinePreviewKey
+        coordinator.onSlashTrigger = onSlashTrigger
         coordinator.userPrefersContinuousSpellChecking = configuration.spellChecking.continuousSpellChecking
         coordinator.userPrefersGrammarChecking = configuration.spellChecking.grammarChecking
         coordinator.userPrefersAutomaticSpellingCorrection = configuration.spellChecking.automaticSpellingCorrection

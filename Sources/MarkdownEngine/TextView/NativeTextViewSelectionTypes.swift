@@ -57,6 +57,33 @@ public enum InlinePreviewKey: Sendable {
     case moveUp, moveDown, confirm, confirmAndOpen, cancel
 }
 
+/// Snapshot of a `/`-triggered insert-command palette session delivered through
+/// ``NativeTextViewWrapper/onSlashTrigger``.
+///
+/// The engine fires the trigger when the caret sits at a `/` that the user just
+/// typed at a line start or just after whitespace, and the surrounding context is
+/// amenable to a block/inline Markdown insert (not inside a code block or active
+/// table cell, view is editable, selection is degenerate). Embedders typically
+/// present an `NSMenu.popUp`-driven palette anchored to ``caretRect``; on confirm
+/// they delete ``triggerRange`` (just the `/`) from the text view and post the
+/// corresponding `MarkdownEditorBus.*` notification. On cancel they only delete
+/// the `/`. The engine does not consume keystrokes while the palette is open —
+/// `NSMenu.popUp` runs its own modal tracking loop that owns arrow/Enter/Esc.
+public struct SlashTriggerState: Sendable {
+    /// Range of the triggering `/` character in the display text. Embedders
+    /// delete this range (or a prefix extended with inline-filter characters)
+    /// before applying the chosen insert action.
+    public let triggerRange: NSRange
+    /// Rect of the triggering `/` in text-view-local coordinates, suitable as
+    /// the `at:` point for `NSMenu.popUp(positioning:at:in:)`.
+    public let caretRect: CGRect
+
+    public init(triggerRange: NSRange, caretRect: CGRect) {
+        self.triggerRange = triggerRange
+        self.caretRect = caretRect
+    }
+}
+
 /// Snapshot of a visible GFM table delivered through
 /// ``NativeTextViewWrapper/onTableSelectionChange``.
 public struct TableSelection: Identifiable, Sendable, Equatable {

@@ -218,6 +218,14 @@ extension NativeTextViewCoordinator {
         }
         previousActiveTokenIndices = activeTokenIndices
         postHeadingsDidChange(for: tv.string)
+
+        // Detect a `/` typed at an eligible position and fire the embedder's
+        // insert-command palette. Runs after the restyle pipeline and on the
+        // next main-loop tick so `textDidChange` returns before any modal UI
+        // (e.g. `NSMenu.popUp`) spins its own tracking loop.
+        if !isProgrammaticEdit {
+            dispatchSlashTriggerIfNeeded(in: tv)
+        }
     }
 
     public func textViewDidChangeSelection(_ notification: Notification) {

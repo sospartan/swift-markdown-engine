@@ -67,6 +67,10 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)?
     var onInlineSelectionChange: ((InlineSelectionState?) -> Void)?
     var onInlinePreviewKey: ((InlinePreviewKey) -> Bool)?
+    /// Embedder hook fired when the user types a `/` eligible to open an
+    /// insert-command palette. See `SlashTriggerState` and the corresponding
+    /// bridge on `NativeTextViewWrapper`.
+    var onSlashTrigger: ((NSTextView, SlashTriggerState) -> Void)?
     var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
     /// Embedder hook fired when the user clicks a rendered callout's icon.
     /// Receives the text view (for `NSMenu.popUp(..., in:)`), the icon rect in
