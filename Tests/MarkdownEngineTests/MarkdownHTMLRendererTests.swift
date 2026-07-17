@@ -60,4 +60,10 @@ struct MarkdownHTMLRendererTests {
         #expect(out.contains("<td>1</td>"))
         #expect(out.contains("<td>2</td>"))
     }
+
+    @Test("linked image becomes nested a>img")
+    func linkedImage() {
+        let out = html("[![alt](img.png)](https://example.com)")
+        #expect(out == "<p><a href=\"https://example.com\"><img src=\"img.png\" alt=\"alt\"></a></p>")
+    }
 }

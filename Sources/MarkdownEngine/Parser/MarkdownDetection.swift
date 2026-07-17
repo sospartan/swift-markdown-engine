@@ -45,17 +45,33 @@ enum MarkdownDetection {
             }
         }
 
-        // When a container token (e.g. a table) is active, every inline token inside it becomes active too.
-        let activeContainers: [MarkdownToken] = indices.compactMap { idx in
+        // When a container token is active, contained tokens become active too:
+        // - table → every inline token inside it
+        // - link → imageLink whose range equals the link's contentRange (linked image)
+        let activeTables: [MarkdownToken] = indices.compactMap { idx in
             let token = tokens[idx]
             return token.kind == .table ? token : nil
         }
-        if !activeContainers.isEmpty {
+        if !activeTables.isEmpty {
             for (i, token) in tokens.enumerated() where !indices.contains(i) {
                 let tStart = token.range.location
                 let tEnd = NSMaxRange(token.range)
-                if activeContainers.contains(where: {
+                if activeTables.contains(where: {
                     tStart >= $0.range.location && tEnd <= NSMaxRange($0.range)
+                }) {
+                    indices.insert(i)
+                }
+            }
+        }
+        let activeLinks: [MarkdownToken] = indices.compactMap { idx in
+            let token = tokens[idx]
+            return token.kind == .link ? token : nil
+        }
+        if !activeLinks.isEmpty {
+            for (i, token) in tokens.enumerated() where !indices.contains(i) && token.kind == .imageLink {
+                if activeLinks.contains(where: {
+                    $0.contentRange.location == token.range.location
+                        && $0.contentRange.length == token.range.length
                 }) {
                     indices.insert(i)
                 }

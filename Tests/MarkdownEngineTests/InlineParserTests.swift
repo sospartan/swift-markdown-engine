@@ -183,6 +183,30 @@ struct InlineParserTests {
         ])
     }
 
+    @Test("linked image [![alt](img)](url)")
+    func linkedImage() {
+        // [![alt](img)](url)  length 18
+        // 0[ 1! 2[ 3a 4l 5t 6] 7( 8i 9m 10g 11) 12] 13( 14u 15r 16l 17)
+        #expect(InlineParser.parse("[![alt](img)](url)") == [
+            .link(range: r(0, 18), textRange: r(1, 11), url: r(14, 3),
+                  markers: [r(0, 1), r(12, 1), r(13, 1), r(17, 1)],
+                  children: [
+                      .image(range: r(1, 11), alt: r(3, 3), url: r(8, 3),
+                             markers: [r(1, 2), r(6, 1), r(7, 1), r(11, 1)]),
+                  ]),
+        ])
+    }
+
+    @Test("link text allows balanced brackets")
+    func linkWithBalancedBrackets() {
+        // [a [b] c](u)  length 12
+        #expect(InlineParser.parse("[a [b] c](u)") == [
+            .link(range: r(0, 12), textRange: r(1, 7), url: r(10, 1),
+                  markers: [r(0, 1), r(8, 1), r(9, 1), r(11, 1)],
+                  children: [.text(r(1, 7))]),
+        ])
+    }
+
     // MARK: - Inline LaTeX
 
     @Test("inline math")

@@ -41,4 +41,16 @@ struct ASTPipelineTests {
         #expect(tokens.contains { $0.kind == .heading })
         #expect(tokens.contains { $0.kind == .italic })
     }
+
+    @Test("linked image projects link + imageLink tokens")
+    func linkedImageTokens() {
+        let text = "[![alt](img.png)](https://example.com)"
+        let tokens = MarkdownTokenizer.parseTokensViaAST(in: text)
+        let link = tokens.first { $0.kind == .link }
+        let image = tokens.first { $0.kind == .imageLink }
+        #expect(link != nil)
+        #expect(image != nil)
+        #expect(link?.contentRange == image?.range)
+        #expect(link?.range == NSRange(location: 0, length: (text as NSString).length))
+    }
 }

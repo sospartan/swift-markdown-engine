@@ -201,7 +201,7 @@ enum InlineParser {
         var i = 0
         while i < len {
             if claimed.contains(where: { NSLocationInRange(i, $0) }) { i += 1; continue }
-            if let span = matchClaimedSpan(ns, len, at: i), !overlapsClaimed(span.fullRange) {
+            if let span = matchClaimedSpan(ns, len, at: i, claimed: claimed), !overlapsClaimed(span.fullRange) {
                 spans.append(span)
                 i = NSMaxRange(span.fullRange)
             } else {
@@ -211,14 +211,14 @@ enum InlineParser {
         return spans
     }
 
-    private static func matchClaimedSpan(_ ns: NSString, _ len: Int, at i: Int) -> Span? {
+    private static func matchClaimedSpan(_ ns: NSString, _ len: Int, at i: Int, claimed: [NSRange]) -> Span? {
         let c = ns.character(at: i)
         let c1 = peek(ns, i + 1, len)
         let c2 = peek(ns, i + 2, len)
         if c == bang, c1 == lbracket, c2 == lbracket { return matchImageEmbed(ns, len, start: i) }
         if c == lbracket, c1 == lbracket { return matchWikiLink(ns, len, start: i) }
         if c == bang, c1 == lbracket { return matchImage(ns, len, start: i) }
-        if c == lbracket { return matchLink(ns, len, start: i) }
+        if c == lbracket { return matchLink(ns, len, start: i, claimed: claimed) }
         if c == tilde, c1 == tilde { return matchStrikethrough(ns, len, start: i) }
         if c == equals, c1 == equals { return matchHighlight(ns, len, start: i) }
         if c == dollar, c1 != dollar { return matchInlineLatex(ns, len, start: i) }
@@ -289,10 +289,10 @@ enum InlineParser {
         )
     }
 
-    /// `[ text ]( url )`
-    private static func matchLink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+    /// `[ text ]( url )` — link text allows balanced brackets (e.g. `[![alt](img)](url)`).
+    private static func matchLink(_ ns: NSString, _ len: Int, start i: Int, claimed: [NSRange]) -> Span? {
         let textStart = i + 1
-        guard let closeBracket = findChar(ns, len, from: textStart, char: rbracket),
+        guard let closeBracket = balancedBracketClose(ns, len, from: textStart, claimed: claimed),
               closeBracket > textStart,
               peek(ns, closeBracket + 1, len) == lparen,
               let closeParen = balancedParen(ns, len, from: closeBracket + 2) else { return nil }
@@ -395,6 +395,30 @@ enum InlineParser {
             let ch = ns.character(at: k)
             if ch == char { return k }
             if ch == newline { return nil }
+            k += 1
+        }
+        return nil
+    }
+
+    /// Closing `]` for link text that may contain balanced `[…]` pairs.
+    /// Skips indices inside `claimed` (escapes / code spans). Newline rejects.
+    private static func balancedBracketClose(
+        _ ns: NSString, _ len: Int, from: Int, claimed: [NSRange]
+    ) -> Int? {
+        func isClaimed(_ idx: Int) -> Bool {
+            claimed.contains { NSLocationInRange(idx, $0) }
+        }
+        var depth = 1
+        var k = from
+        while k < len {
+            if isClaimed(k) { k += 1; continue }
+            let ch = ns.character(at: k)
+            if ch == newline { return nil }
+            if ch == lbracket { depth += 1 }
+            else if ch == rbracket {
+                depth -= 1
+                if depth == 0 { return k }
+            }
             k += 1
         }
         return nil

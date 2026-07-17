@@ -131,9 +131,13 @@ extension MarkdownStyler {
         alignment: NSTextAlignment,
         mode: RenderedStandaloneBlockMode,
         ctx: StylingContext,
-        attrs: inout [StyledRange]
+        attrs: inout [StyledRange],
+        standaloneToken: MarkdownToken? = nil,
+        anchorLink: URL? = nil,
+        extraHideRanges: [NSRange] = []
     ) -> Bool {
-        guard let paraRange = token.standaloneParagraphRange(in: ctx.nsText) else { return false }
+        let gateToken = standaloneToken ?? token
+        guard let paraRange = gateToken.standaloneParagraphRange(in: ctx.nsText) else { return false }
 
         let para = NSMutableParagraphStyle()
         let baseLineHeight = layoutBridgeDefaultLineHeight(for: ctx.baseFont, using: ctx.layoutBridge)
@@ -142,6 +146,8 @@ extension MarkdownStyler {
 
         switch mode {
         case .collapsedSource(let markerTexts):
+            var extra: [NSAttributedString.Key: Any] = [:]
+            if let anchorLink { extra[.link] = anchorLink }
             emitCollapsedAttrs(
                 token: token,
                 rawContent: rawContent,
@@ -152,11 +158,19 @@ extension MarkdownStyler {
                 paraRange: paraRange,
                 advanceWidth: imageBounds.width,
                 neededLineHeight: imageBounds.height,
-                extraAnchorAttrs: [:],
+                extraAnchorAttrs: extra,
                 markerTexts: markerTexts,
                 ctx: ctx,
                 attrs: &attrs
             )
+            for range in extraHideRanges where range.length > 0 {
+                let text = ctx.nsText.substring(with: range)
+                attrs.append((range, [
+                    .foregroundColor: NSColor.clear,
+                    .font: ctx.latexMarkerFont,
+                    .kern: -HeadingHelpers.textWidth(text, font: ctx.latexMarkerFont)
+                ]))
+            }
 
         case .collapsedSourceScrollable(let markerTexts, let displayWidth, let sourceID):
             emitCollapsedAttrs(
