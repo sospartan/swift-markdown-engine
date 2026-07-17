@@ -68,6 +68,13 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var onInlineSelectionChange: ((InlineSelectionState?) -> Void)?
     var onInlinePreviewKey: ((InlinePreviewKey) -> Bool)?
     var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
+    /// Embedder hook fired when the user clicks a rendered callout's icon.
+    /// Receives the text view (for `NSMenu.popUp(..., in:)`), the icon rect in
+    /// text-view-local coords, and the current callout type (e.g. `"note"`).
+    /// The coordinator has already placed the caret on the callout's first line,
+    /// so posting ``MarkdownEditorBus/applyCalloutRequest`` with a new type
+    /// replaces `[!OLD]` while keeping the title.
+    var onCalloutIconClick: ((NSView, CGRect, String) -> Void)?
     var didInitialFormatting: Bool = false
     /// One-shot guard so `updateCodeBlockSelection` only forces a full-document layout once per document.
     var didEnsureLayoutForCurrentDocument: Bool = false

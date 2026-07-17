@@ -95,6 +95,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// Fires when the set of visible code blocks changes, so embedders can
     /// overlay copy buttons (see ``CodeBlockButton``).
     public var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
+    /// Fires when the user clicks a rendered callout's icon. Receives the text
+    /// view (use as the `in:` view for `NSMenu.popUp`), the icon rect in
+    /// text-view-local coords, and the current callout type (e.g. `"note"`).
+    /// The engine has already placed the caret on the callout's first line, so
+    /// posting ``MarkdownEditorBus/applyCalloutRequest`` with a new type
+    /// replaces `[!OLD]` while keeping the title.
+    public var onCalloutIconClick: ((NSView, CGRect, String) -> Void)?
     /// Fires after the user toggles any of the three spell/grammar/auto-correction
     /// menu items. Embedders persist the returned policy (e.g. to `UserDefaults`) and feed it back via
     /// ``MarkdownEditorConfiguration/spellChecking`` on next launch.
@@ -154,6 +161,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         onInlineSelectionChange: ((InlineSelectionState?) -> Void)? = nil,
         onInlinePreviewKey: ((InlinePreviewKey) -> Bool)? = nil,
         onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)? = nil,
+        onCalloutIconClick: ((NSView, CGRect, String) -> Void)? = nil,
         onSpellCheckingPolicyChanged: ((SpellCheckingPolicy) -> Void)? = nil,
         onHeadingsDidChange: (([DocumentHeading]) -> Void)? = nil,
         scrollHandler: ScrollHandler = ScrollHandler(),
@@ -180,6 +188,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.onInlineSelectionChange = onInlineSelectionChange
         self.onInlinePreviewKey = onInlinePreviewKey
         self.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        self.onCalloutIconClick = onCalloutIconClick
         self.onSpellCheckingPolicyChanged = onSpellCheckingPolicyChanged
         self.onHeadingsDidChange = onHeadingsDidChange
         self.scrollHandler = scrollHandler
@@ -327,6 +336,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        context.coordinator.onCalloutIconClick = onCalloutIconClick
 
         textView.tableEditorCommitHandler = { [weak textView, weak coordinator = context.coordinator] range, replacement in
             guard let textView, let coordinator else { return }
@@ -631,6 +641,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onInlineSelectionChange = onInlineSelectionChange
         context.coordinator.onInlinePreviewKey = onInlinePreviewKey
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        context.coordinator.onCalloutIconClick = onCalloutIconClick
         context.coordinator.onHeadingsDidChange = onHeadingsDidChange
         context.coordinator.didInitialFormatting = true
         context.coordinator.postHeadingsDidChange(for: textView.string)

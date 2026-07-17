@@ -49,6 +49,26 @@ final class LayoutBridge {
         return result.isNull ? .zero : result
     }
 
+    /// Rect of the FIRST visual line segment for `range` (container coords).
+    ///
+    /// Unlike ``boundingRect(forCharacterRange:in:)`` — which unions every
+    /// segment and so spans soft-wrapped continuations — this returns only the
+    /// first visual line. Used to locate a callout's rendered icon, which lives
+    /// on the first visual line whose `firstLineHeadIndent` reserves icon space;
+    /// a wrapped continuation is indented at `headIndent` instead and would
+    /// corrupt the icon X math.
+    func firstSegmentRect(forCharacterRange range: NSRange, in textContainer: NSTextContainer) -> CGRect {
+        guard let textRange = textRange(for: range) else { return .zero }
+        var first = CGRect.null
+        textLayoutManager.enumerateTextSegments(
+            in: textRange, type: .standard, options: []
+        ) { _, rect, _, _ in
+            first = rect
+            return false
+        }
+        return first.isNull ? .zero : first
+    }
+
     func characterIndex(
         for point: CGPoint,
         in textContainer: NSTextContainer,
